@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { PeriscopeError } from '../core/errors.ts';
 import { isResultId, newResultId } from '../core/ids.ts';
 import type { Loggers } from '../core/logger.ts';
+import type { Signer } from '../core/signing.ts';
 import type { PreparedQuery, SourceAdapter } from '../sources/adapter.ts';
+import { encodeFileReference } from './files.ts';
 import { Job } from './job.ts';
 import type { StoreDescriptor } from './parquet/protocol.ts';
 import { getJson, type ResultStore } from './store/store.ts';
@@ -24,6 +26,7 @@ export interface ResultServiceOptions {
     maxConcurrentQueriesPerUser: number;
     read: WindowLimits;
     loggers: Loggers;
+    signer: Signer;
 }
 
 /** A heartbeat older than this means the replica running the job is gone. */
@@ -101,6 +104,7 @@ export class ResultService {
             partBytes: this.#options.partBytes,
             maxResultBytes: config.maxResultBytes,
             log,
+            fileReference: (id, reference) => encodeFileReference(this.#options.signer, id, reference),
         });
         await job.persist();
         this.#jobs.set(resultId, job);

@@ -37,6 +37,8 @@ export interface ExecutionContext {
     log: Logger;
     /** Adds to the per-result cost statistics, e.g. `{ ru: 3.2 }`. */
     addCost(cost: Record<string, number>): void;
+    /** Builds the signed relative path (`files/…`) under which a referenced blob is served. */
+    fileReference(reference: FileReference): string;
 }
 
 export interface TabularStream {

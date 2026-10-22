@@ -1,7 +1,13 @@
 import type { Logger } from 'pino';
 import { PeriscopeError, toPeriscopeError } from '../core/errors.ts';
 import { toJson } from '../core/values.ts';
-import type { DocumentStream, ExecutionContext, ResultStream, TabularStream } from '../sources/adapter.ts';
+import type {
+    DocumentStream,
+    ExecutionContext,
+    FileReference,
+    ResultStream,
+    TabularStream,
+} from '../sources/adapter.ts';
 import { SchemaInferrer } from './infer.ts';
 import { NdjsonPartWriter, type PartResult } from './ndjson.ts';
 import type { StoreDescriptor } from './parquet/protocol.ts';
@@ -38,6 +44,7 @@ export interface JobOptions {
     partBytes: number;
     maxResultBytes: number;
     log: Logger;
+    fileReference: (resultId: string, reference: FileReference) => string;
 }
 
 /**
@@ -87,6 +94,7 @@ export class Job {
             addCost: (cost) => {
                 for (const [key, value] of Object.entries(cost)) this.#costs[key] = (this.#costs[key] ?? 0) + value;
             },
+            fileReference: (reference) => this.#options.fileReference(this.manifest.resultId, reference),
         };
     }
 

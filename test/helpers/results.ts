@@ -1,7 +1,9 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nullLoggers } from '../../src/core/logger.ts';
+import { Signer } from '../../src/core/signing.ts';
 import { type Caller, ResultService } from '../../src/results/service.ts';
 import { FilesystemResultStore } from '../../src/results/store/filesystem.ts';
 import type { SourceAdapter } from '../../src/sources/adapter.ts';
@@ -27,6 +29,7 @@ export const createResultHarness = async (overrides: { partBytes?: number } = {}
         maxConcurrentQueriesPerUser: 8,
         read: { maxRows: 500, maxBytes: 65_536, maxValueChars: 2000 },
         loggers: nullLoggers(),
+        signer: new Signer(randomBytes(32)),
     });
     return {
         service,
