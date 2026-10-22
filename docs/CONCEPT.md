@@ -70,7 +70,7 @@ agent sandbox (curl, DuckDB, …) ─────▶ /r/<signed-token> ───
 - **Control plane (MCP):** discover sources, describe metadata, start queries, check status, read windows.
 - **Data plane (HTTP):** download results. These are plain HTTP endpoints on the same container, so `curl` works and so does DuckDB's `read_parquet`/`read_json` over HTTPS.
 - **Result store:** Periscope's own Blob container, which is a separate storage account and never a source. Results are materialized there in parts, with a manifest, and deleted after a retention period. Replicas hold no state of their own. Any replica can answer `get_result`, `read_result` and downloads from the store.
-- **Transport:** MCP Streamable HTTP for deployed instances, and stdio for local development. In stdio mode the result store can be a local directory, and `get_result` returns file paths instead of URLs.
+- **Transport:** MCP Streamable HTTP for deployed instances, and stdio for local development. In stdio mode the result store is a local directory, and Periscope also starts the HTTP data plane on `127.0.0.1`, so download URLs work the same way as in a deployment.
 - **Tech stack:** TypeScript on Node.js 24. Libraries and the reasoning behind them are in §9.1.
 
 ---
@@ -80,6 +80,8 @@ agent sandbox (curl, DuckDB, …) ─────▶ /r/<signed-token> ───
 All configuration comes from environment variables. In Azure, secrets come in as Key Vault references. For local development, `--env-file <path>` loads a gitignored dotenv file.
 
 ### 4.1 Global settings
+
+The authoritative, complete reference is [configuration.md](configuration.md); it also lists the overrides for tests and other clouds (`PERISCOPE_HOST`, `PERISCOPE_AUTH_ISSUER`, `PERISCOPE_AUTH_JWKS_URI`, `PERISCOPE_RESULTS_CONNECTION_STRING`, …). The main settings:
 
 | Variable                                                       | Default                                   | Purpose                                                                                                                 |
 | -------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
@@ -649,7 +651,7 @@ These APIs have a fixed set of operations, and Periscope only implements the rea
 | Blob (source) | `GET`, `HEAD`                                                                                                             | Everything else: upload, delete, set metadata/tags, leases, copy, snapshots                                                                |
 | Log Analytics | `POST …/query` against the query endpoint                                                                                 | Everything else. The token is requested only for the query API, which has no write operations, and never for ARM (`management.azure.com`). |
 
-The Cosmos NoSQL query language has no DML, and UDFs cannot write, so query strings need no filtering. For Storage, the wire guard runs as an Azure pipeline policy. For Cosmos it uses the SDK's request plugin hook, or a fetch/agent wrapper if that hook proves unsuitable (see §12).
+The Cosmos NoSQL query language has no DML, and UDFs cannot write, so query strings need no filtering. For Cosmos, the wire guard is passed as the SDK's public `httpClient` option, through which every request goes (data plane, metadata, account discovery). For Storage it is a request policy factory appended to the pipeline of the only client the source creates; child clients inherit it. Two read-like operations are `POST` and therefore blocked as well: user delegation keys and quick query, neither of which Periscope uses.
 
 #### B. Free-form query languages, filtered: Postgres, Oracle and Redis
 
@@ -667,8 +669,11 @@ Several independent layers per type. All guard checks run synchronously in `quer
    - **Blocked by name:**
      - `dblink*`, `oracle_execute` (oracle_fdw can run arbitrary statements remotely), `pg_background*`, `cron.*`
      - `pg_advisory*`, `pg_notify`, `pg_terminate_backend`, `pg_cancel_backend`, `pg_reload_conf`, `set_config`, `lo_*`
-   - **At startup,** Periscope scans user-defined function bodies (`pg_proc.prosrc`) for those names and blocks the affected functions. It also blocks every view that depends on them, transitively via `pg_depend`.
-   - Plain user-defined functions stay allowed, because the engine blocks their local writes.
+     - also `pg_logical_emit_message`, `pg_stat_reset*`, replication-slot functions, `pg_read_file`/`pg_ls_*`, `nextval`/`setval`, `txid_current`, `pg_sleep`
+   - **Views.** Postgres records no dependencies on built-in functions, so `pg_depend` cannot show that a view calls e.g. `pg_advisory_lock`. At startup Periscope therefore parses every readable view definition (`pg_get_viewdef`) with the same parser and blocks views that call a blocked function, transitively through views that read other blocked views. A definition that cannot be parsed blocks its view (fail closed).
+   - **Strict mode.** The experiments showed that a user-defined function or a view can wrap `dblink_exec` invisibly, and the remote write persists despite the read-only transaction. So if the role can execute any function that writes outside the transaction (`dblink*`, `oracle_execute`, `pg_background*`, or functions in untrusted languages), the source switches to strict mode: every user-defined function, and every view that uses one, is blocked unless allowlisted with `ALLOW_ROUTINES`.
+   - Otherwise plain user-defined functions stay allowed, because the engine blocks their local writes.
+   - **Session state.** Session-level advisory locks survive ROLLBACK, so `pg_advisory_unlock_all()` runs before a connection returns to the pool.
 
 **Oracle (reference: 19c, often with a shared write-capable credential)**
 
@@ -685,13 +690,14 @@ Oracle before 23ai has no session-level read-only mode, and DDL commits implicit
 1. **Statement filter.** A strict lexer handles comments, string literals including the `q'[…]'` syntax, and quoted identifiers. Any character or construct it does not recognize leads to rejection. Rules:
    - exactly one statement
    - first keyword `SELECT` or `WITH`
-   - none of: `WITH FUNCTION`/`PROCEDURE`, PL/SQL blocks (`BEGIN`/`DECLARE`), `FOR UPDATE`, `;`, database links (`@…`, unless `ALLOW_DBLINKS`)
-2. **Second check.** After the filter passes, node-oracledb's `getStatementInfo()` must return `STMT_TYPE_SELECT`. This is an extra safety net, not a fully independent engine, because in thin mode the classification is partly done on the client.
-3. **Routine inventory** (at startup, refreshed periodically). It blocks routines visible to the user (`ALL_PROCEDURES`, `ALL_SOURCE`) when:
-   - their source contains `PRAGMA AUTONOMOUS_TRANSACTION`, `EXECUTE IMMEDIATE`, `DBMS_SQL`, `DBMS_JOB`/`DBMS_SCHEDULER` or `UTL_*`, or
-   - their source cannot be inspected (wrapped code).
+   - none of: `WITH FUNCTION`/`PROCEDURE`, PL/SQL blocks (`BEGIN`/`DECLARE`), `FOR UPDATE`, `NEXTVAL` (sequences advance even in a read-only transaction), `;`, database links (`@…`, unless `ALLOW_DBLINKS`)
+   - one trailing `;` or `/` is removed before the statement is sent
+2. **No `getStatementInfo()` check.** The experiments showed that node-oracledb's thin mode sends many statements to the server as a parse call, and Oracle then executes some DDL (`RENAME`, `FLASHBACK TABLE`, `PURGE`). It is therefore not used at all; the lexer is the only DDL guard.
+3. **Routine inventory** (at startup, refreshed every 10 minutes), in one of two modes:
+   - **Precise**, when the credential can read `DBA_SOURCE` and `DBA_DEPENDENCIES` (e.g. `SELECT_CATALOG_ROLE`): routines whose source contains `PRAGMA AUTONOMOUS_TRANSACTION`, `EXECUTE IMMEDIATE`, `DBMS_SQL`, `DBMS_JOB`/`DBMS_SCHEDULER`, `DBMS_PIPE`/`DBMS_LOCK`/`DBMS_AQ` or `UTL_*`, or that are wrapped, are blocked.
+   - **Conservative**, otherwise. Without catalog access a user cannot see package bodies or routines it does not reference directly, so every user-defined routine is blocked.
 
-   Every view and routine that depends on them is blocked too, transitively via `ALL_DEPENDENCIES`. Matching is **by name**, because Oracle allows calling zero-argument functions without `()`. A reviewed routine can be cleared per source with `ALLOW_ROUTINES`.
+   In both modes everything that depends on a blocked routine (views, other routines, synonyms, tables with virtual columns) is blocked too, transitively. Matching is **by name**, because Oracle allows calling zero-argument functions without `()`. A reviewed routine can be cleared per source with `ALLOW_ROUTINES`; its dependents are then not blocked because of it.
 4. **System package allowlist.** References to `DBMS_*`, `UTL_*` and `SYS.*` are allowed only for read-only packages and functions, such as `DBMS_METADATA.GET_DDL`, `DBMS_LOB.SUBSTR`/`GETLENGTH` and `DBMS_XPLAN`. Everything else is blocked, e.g. `DBMS_PIPE`, `DBMS_LOCK`, `UTL_HTTP`.
 5. **Optional, engine-side.** A `BEFORE DDL` trigger that raises an error when `SYS_CONTEXT('USERENV','MODULE') = 'periscope'`. Periscope sets the module name on every connection. This adds DDL protection in the database itself without needing a separate user. It is a recommended operator setup, not a requirement.
 6. **Oracle 23ai and newer:** additionally enable the session-level read-only mode where available.
@@ -781,7 +787,7 @@ Entra has no Dynamic Client Registration and no Client ID Metadata Documents, so
 | `claude mcp add` / `.mcp.json` (local fallback)                              | `claude mcp add --transport http --client-id <id> --callback-port <port> periscope https://periscope.example.com/mcp`. Alternatively a `headersHelper` running `az account get-access-token --scope https://periscope.example.com/mcp/.default`, which needs the Azure CLI pre-authorized on the scope.                                                                                                                                                                                                                              |
 | **Unattended cloud agents** (scheduled tasks / routines, API-triggered runs) | They use the claude.ai connectors of the user who owns the task, and everything they do through Periscope appears as that user (audit log included). Claude refreshes tokens before they expire. The Entra refresh token has a sliding lifetime of about 90 days, unless Conditional Access sign-in frequency shortens it. If the refresh token dies, there is no unattended re-authentication: runs fail on Periscope calls until the user reconnects the connector in claude.ai. Scheduled tasks are currently a research preview. |
 
-**Known risks, to verify in the spike (§12):**
+**Known risks, to verify at deployment (§12):**
 - **End to end with Claude Code against a path-qualified App ID URI.** Microsoft and Anthropic both document this configuration, but no first-hand report of a successful Claude Code sign-in has been found yet.
 - **Reconnects.** Community reports describe an Entra error on reconnect, where the requested scope falls back to Microsoft Graph (`AADSTS650053`).
 
@@ -790,7 +796,7 @@ Entra has no Dynamic Client Registration and no Client ID Metadata Documents, so
 - **Cloud downloads need an allowlist entry.** Connector traffic needs no allowlist, but downloads (`curl` from the sandbox) do: the Periscope hostname must be in the cloud environment's network access list (Custom access level). Otherwise the sandbox gets `403` with `x-deny-reason: host_not_allowed`.
 - **No IP allowlisting is planned.** Security rests on authentication (OAuth for `/mcp`) and on signed, expiring URLs (for `/r/…`). Operators who want an extra network layer can restrict `/mcp` at their gateway to Anthropic's published egress range (`160.79.104.0/21`) plus their own egress addresses. That is purely optional and not part of Periscope. An IP allowlist on the _claude.ai organization_ itself is a different feature: it breaks Anthropic-hosted cloud sessions.
 
-**Plan B,** if the direct Entra setup fails in the spike: an OAuth facade inside Periscope. Periscope would act as authorization server towards clients: RFC 8414 metadata, CIMD/DCR, stripping or rewriting `resource` and scopes towards Entra. Login would still be delegated to Entra. That works with every client, but Periscope would then issue OAuth tokens, which brings signing keys and state.
+**Plan B,** if the direct Entra setup fails at deployment: an OAuth facade inside Periscope. Periscope would act as authorization server towards clients: RFC 8414 metadata, CIMD/DCR, stripping or rewriting `resource` and scopes towards Entra. Login would still be delegated to Entra. That works with every client, but Periscope would then issue OAuth tokens, which brings signing keys and state.
 
 ### 7.3 Authorization
 
@@ -885,9 +891,9 @@ It outputs the internal FQDN for the gateway configuration.
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Runtime and tooling | Node.js 24 LTS, TypeScript (strict), pnpm, Biome, `node:test`, Testcontainers                                                                                                                                                   |                                                                                                                                                       |
 | HTTP                | Express 5                                                                                                                                                                                                                       | One server for `/mcp` and `/r/…`. The MCP SDK's Streamable HTTP transport plugs in without adapters. Range responses are a few lines of our own code. |
-| MCP                 | `@modelcontextprotocol/sdk`                                                                                                                                                                                                     | Stateless Streamable HTTP, and stdio. The OAuth resource-server part (PRM endpoint, bearer validation) is our own small code on `jose`.               |
+| MCP                 | `@modelcontextprotocol/server`, `/express`, `/node` (v2 SDK)                                                                                                                                                                    | Stateless Streamable HTTP (2025 and 2026 protocol revisions), and stdio. Bearer validation uses the SDK's `requireBearerAuth` with our Entra verifier on `jose`. |
 | Validation          | `zod`                                                                                                                                                                                                                           | Configuration and tool schemas                                                                                                                        |
-| Sources             | `pg` with cursor streaming, `oracledb` (thin), `@azure/cosmos`, `@azure/storage-blob`, `@azure/monitor-query`, `redis` (node-redis, standalone and cluster, with its Entra ID add-on for Azure-hosted Redis), `@azure/identity` |                                                                                                                                                       |
+| Sources             | `pg` with `pg-cursor`, `oracledb` (thin), `@azure/cosmos`, `@azure/storage-blob`, the Log Analytics REST query API via `fetch`, `@redis/client` (pinned, with `@redis/entraid`), `@azure/identity`                              | The Redis wire guard patches the client's RESP encoder, so the version is pinned and covered by tests.                                                |
 | Guards              | `libpg-query` (Postgres' own parser), our own Oracle lexer                                                                                                                                                                      |                                                                                                                                                       |
 | NDJSON              | `node:zlib`                                                                                                                                                                                                                     | One gzip member per block                                                                                                                             |
 | **Parquet writer**  | **`hyparquet-writer`** (pure JS, MIT)                                                                                                                                                                                           | See below                                                                                                                                             |
@@ -991,35 +997,26 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
 
 ---
 
-## 11. Plan
+## 11. Implementation status
 
-1. **Spike (1–2 days).**
-   - Minimal Periscope deployed in a test environment behind a gateway with Entra: `list_sources`, `query`/`get_result`/`read_result` for Cosmos, filesystem or Blob result store, one download URL.
-   - Verify the claude.ai connector, `claude mcp add --client-id`, a cloud session including `curl` downloads, a scheduled cloud task, and the gateway's behaviour on large downloads.
-   - Parquet path: `hyparquet-writer` streaming row groups into Azure block blobs from a real Postgres cursor, with throughput measured, and `hyparquet` windows with exact decimals.
-   - Resolve the spike questions in §12.
-2. **Phase 1:**
-   - Core, HTTP + auth.
-   - The result model: jobs, parts, manifest, schema inference, windows, downloads, retention.
-   - Sources: Postgres, Cosmos.
-3. **Phase 2:** Blob (listing with referenced contents), Log Analytics (including time-window splitting), and Redis.
-4. **Phase 3:** Oracle, including routine inventory and the full guard corpus.
-5. **Phase 4:** Terraform module and reference deployment docs.
+All of §1–§10 is implemented. Instead of a spike, targeted experiments settled the technical questions before the build (Parquet streaming and exact decimals, Cosmos and Blob wire guards, block-gzip compatibility, Postgres and Oracle write paths, the Redis client guard, the MCP v2 server). Their findings are reflected above.
+
+Every source is tested against a real database or emulator with write-capable credentials (`test/integration`): Postgres (`pgvector/pgvector:pg17`), Oracle (Free 23ai locally on ARM64, XE 21 in CI), the Cosmos DB emulator, Azurite, Redis 8, and a mock of the Log Analytics query API. An end-to-end test runs the real process with Entra-style tokens from a local issuer, the MCP client, downloads and stdio mode.
+
+What remains is verification in a real deployment (§12).
 
 ---
 
 ## 12. Open questions
 
-**To verify in the spike**
+**To verify at deployment**
+
 1. **Entra end to end.** Sign-in with local Claude Code and with the claude.ai connector against the configuration in §7.2: path-qualified App ID URI, fully qualified scope, v2 tokens. This includes a reconnect (community reports of `AADSTS650053`) and a scheduled cloud task. The configuration is documented by Microsoft and Anthropic, but no first-hand Claude Code success report has been found. The outcome decides between direct Entra and Plan B.
-2. **Cosmos wire guard.** Where to attach the guard that checks every outgoing Cosmos request: the SDK's request plugin mechanism, or a wrapper around the HTTP client underneath.
-3. **Parquet in practice** (§9.1):
-   - `hyparquet-writer` throughput with real Postgres and Oracle drivers.
-   - Exact DECIMAL decoding in `hyparquet`: an upstream parser hook, a local patch, or reading the raw column bytes. Alternatively, `parquet-wasm` as the reader.
+2. **Gateway behaviour** for SSE on `/mcp` and long downloads (no buffering, no compression, no total-duration cap).
 
 **Design**
-4. `explain` for Oracle: `DBMS_XPLAN.DISPLAY_CURSOR` needs access to `V$SQL_PLAN`. Is there a fallback when the credential lacks it?
-5. Is the final image and package name `ghcr.io/coreprocess/periscope-mcp`?
+
+3. `explain` for Oracle uses `DBMS_XPLAN.DISPLAY_CURSOR`, which needs access to `V$SQL_PLAN`, `V$SQL` and `V$SESSION`. A fallback without those privileges would be `EXPLAIN PLAN` into the session-private `PLAN_TABLE` inside the read-only transaction, if Oracle allows it there; to be checked on the target database.
 
 **Decided**
 - Result retention: 24 hours (`PT24H`).
@@ -1032,6 +1029,7 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
 - Manifest and indexes are Periscope's own format-independent JSON. Every part has an index (gzip members or row groups). Parquet indexes add per-part column statistics, and the Parquet schema shows each column's stored type (§6.4).
 - No IP allowlisting. Security rests on OAuth and signed, expiring download URLs; gateway IP restrictions are an optional operator add-on (§7.2).
 - Idle waits are short. `get_result` waits at most 10 s, and gateway idle timeouts of about 10 s are fine. Downloads only need a timeout that doesn't cap the total transfer time (§5.3, §8.2).
-- Entra ID v2 is used directly as the authorization server, with the exact configuration in §7.2. Plan B (OAuth facade) only if the spike fails.
+- Entra ID v2 is used directly as the authorization server, with the exact configuration in §7.2. Plan B (OAuth facade) only if verification at deployment fails.
 - Unattended cloud agents use claude.ai connectors (scheduled tasks and API-triggered runs) and act as the user who owns them (§7.2).
-- TypeScript on Node.js 24. Parquet is written with `hyparquet-writer` and read with `hyparquet`; `@duckdb/node-api` is the fallback writer (§9.1).
+- TypeScript on Node.js 24. Parquet is written with `hyparquet-writer` in a worker thread per part and read with `hyparquet`; exact decimals are read by stripping the DECIMAL annotation from the footer metadata and formatting the raw unscaled values (§9.1).
+- Image name `ghcr.io/coreprocess/periscope-mcp`, license MIT.
