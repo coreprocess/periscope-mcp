@@ -3,7 +3,7 @@
  * A pattern without wildcards (or ending in `/`) is treated as a prefix.
  */
 
-const escape = (char: string): string => char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+const escapeRegex = (char: string): string => char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 
 export interface CompiledGlob {
     /** Longest literal prefix, used to narrow the server-side listing. */
@@ -31,7 +31,7 @@ export const compileGlob = (pattern: string): CompiledGlob => {
         } else if (char === '?') {
             regex += '[^/]';
         } else {
-            regex += escape(char);
+            regex += escapeRegex(char);
         }
     }
     const compiled = new RegExp(`${regex}$`, 's');

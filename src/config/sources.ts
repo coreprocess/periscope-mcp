@@ -50,6 +50,7 @@ const schemas = {
         AUTH: auth.optional(),
         SSL: z.enum(['disable', 'require', 'verify-full']).optional(),
         SEARCH_PATH: z.string().optional(),
+        ALLOW_ROUTINES: list.optional(),
     }),
     oracle: z.object({
         ...common,
@@ -138,6 +139,7 @@ export interface PostgresSourceConfig extends CommonSourceConfig {
     azureAuth: boolean;
     ssl: 'disable' | 'require' | 'verify-full' | undefined;
     searchPath: string | undefined;
+    allowRoutines: string[];
 }
 
 export interface OracleSourceConfig extends CommonSourceConfig {
@@ -261,6 +263,7 @@ export const buildSourceConfig = (
                 azureAuth: r.AUTH === 'azure',
                 ssl: r.SSL,
                 searchPath: r.SEARCH_PATH,
+                allowRoutines: (r.ALLOW_ROUTINES ?? []).map((s) => s.toLowerCase()),
             };
         }
         case 'oracle': {

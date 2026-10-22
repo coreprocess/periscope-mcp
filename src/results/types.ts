@@ -106,6 +106,7 @@ export interface BlockIndex {
 
 export const MANIFEST_PATH = 'manifest.json';
 export const STATE_PATH = 'state.json';
+export const CANCEL_PATH = 'cancel.json';
 export const partPath = (index: number, format: ResultFormat): string =>
     `part-${String(index).padStart(4, '0')}.${format === 'parquet' ? 'parquet' : 'ndjson.gz'}`;
 export const partIndexPath = (index: number): string => `index/part-${String(index).padStart(4, '0')}.json`;
