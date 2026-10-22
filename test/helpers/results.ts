@@ -43,6 +43,9 @@ export const createResultHarness = async (overrides: { partBytes?: number } = {}
             }
             throw new Error('query did not finish');
         },
-        dispose: () => rm(dir, { recursive: true, force: true }),
+        dispose: async () => {
+            await service.shutdown();
+            await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        },
     };
 };
