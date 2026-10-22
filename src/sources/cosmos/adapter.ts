@@ -64,8 +64,22 @@ export class CosmosAdapter implements SourceAdapter {
             ...(c.azureAuth ? { aadCredentials: new DefaultAzureCredential() } : { key: c.key as string }),
             httpClient: guardedCosmosHttpClient(c.name),
             userAgentSuffix: 'periscope-mcp',
-            connectionPolicy: { enableEndpointDiscovery: !/localhost|127\.0\.0\.1/.test(c.endpoint) },
+            connectionPolicy: {
+                enableEndpointDiscovery: !/localhost|127\.0\.0\.1/.test(c.endpoint),
+                requestTimeout: 30_000,
+            },
         });
+        // Fail fast for unreachable or deleted accounts; the registry retries later.
+        try {
+            await this.#client.getDatabaseAccount({ abortSignal: AbortSignal.timeout(15_000) });
+        } catch (error) {
+            const reason =
+                (error as { name?: string }).name === 'AbortError' ? 'no answer within 15s' : (error as Error).message;
+            throw new PeriscopeError(
+                'source_error',
+                `Cosmos account ${new URL(c.endpoint).host} is not reachable (${reason})`
+            );
+        }
     }
 
     get #clientOrThrow(): CosmosClient {

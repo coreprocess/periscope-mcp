@@ -1,7 +1,7 @@
 import { type CallToolResult, McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { claimsOf } from '../auth/entra.ts';
-import { toPeriscopeError } from '../core/errors.ts';
+import { PeriscopeError, toPeriscopeError } from '../core/errors.ts';
 import { toJson } from '../core/values.ts';
 import { readFileWindow } from '../results/file-window.ts';
 import { decodeFileReference } from '../results/files.ts';
@@ -9,6 +9,19 @@ import { type Caller, MAX_WAIT_MS, type ResultSnapshot } from '../results/servic
 import { canDownload, canUseSource, downloadBase, LOCAL_CALLER, requireSource, type ToolContext } from './context.ts';
 
 const SCHEMA_INLINE_COLUMNS = 200;
+const DESCRIBE_TIMEOUT_MS = 45_000;
+
+/** Bounds calls that have no result job around them, so a hanging source answers with an error. */
+const withTimeout = <T>(promise: Promise<T>, ms: number, what: string): Promise<T> => {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+            () => reject(new PeriscopeError('timeout', `${what} did not answer within ${ms / 1000}s`)),
+            ms
+        );
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
 
 const json = (value: unknown): CallToolResult => ({ content: [{ type: 'text', text: toJson(value) }] });
@@ -101,6 +114,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
         async (_args, ctx) => {
             const caller = callerOf(context, ctx);
             try {
+                await context.registry.settle(20_000);
                 const sources = context.registry
                     .configs()
                     .filter((config) => canUseSource(caller, config))
@@ -148,7 +162,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
             try {
                 requireSource(context, caller, source);
                 const adapter = await context.registry.get(source);
-                const result = await adapter.describe(path, filter);
+                const result = await withTimeout(adapter.describe(path, filter), DESCRIBE_TIMEOUT_MS, 'describe');
                 audit(context, caller, 'describe', { source, path });
                 return json(result);
             } catch (error) {

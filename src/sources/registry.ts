@@ -29,6 +29,7 @@ export const createAdapter = (config: SourceConfig): SourceAdapter => {
 interface Entry {
     adapter: SourceAdapter;
     ready: Promise<void> | undefined;
+    settled: boolean;
     error: string | undefined;
 }
 
@@ -51,7 +52,12 @@ export class SourceRegistry {
     ) {
         this.#log = log;
         for (const config of configs) {
-            this.#entries.set(config.name, { adapter: factory(config), ready: undefined, error: undefined });
+            this.#entries.set(config.name, {
+                adapter: factory(config),
+                ready: undefined,
+                settled: false,
+                error: undefined,
+            });
         }
     }
 
@@ -64,14 +70,17 @@ export class SourceRegistry {
     }
 
     #start(name: string, entry: Entry): Promise<void> {
+        entry.settled = false;
         entry.ready = entry.adapter.init(this.#log.child({ source: name })).then(
             () => {
                 entry.error = undefined;
+                entry.settled = true;
             },
             (error: unknown) => {
                 entry.error = errorMessage(error);
+                entry.settled = true;
                 this.#retryAt.set(name, Date.now() + RETRY_MS);
-                this.#log.error({ source: name, err: error }, 'source initialization failed');
+                this.#log.error({ source: name, error: entry.error }, 'source initialization failed');
                 throw error;
             }
         );
@@ -87,7 +96,14 @@ export class SourceRegistry {
     status(name: string): { available: boolean; error?: string } {
         const entry = this.#entries.get(name);
         if (!entry) return { available: false, error: 'unknown source' };
+        if (!entry.settled) return { available: false, error: 'still connecting' };
         return entry.error ? { available: false, error: entry.error } : { available: true };
+    }
+
+    /** Waits until every source has finished (or failed) initializing, at most `ms`. */
+    async settle(ms: number): Promise<void> {
+        const pending = [...this.#entries.values()].map((e) => e.ready?.catch(() => undefined));
+        await Promise.race([Promise.all(pending), new Promise((resolve) => setTimeout(resolve, ms).unref())]);
     }
 
     peek(name: string): SourceAdapter | undefined {
