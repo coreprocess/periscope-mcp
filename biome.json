@@ -1,0 +1,116 @@
+{
+    "$schema": "https://biomejs.dev/schemas/2.6.2/schema.json",
+    "vcs": {
+        "enabled": true,
+        "clientKind": "git",
+        "useIgnoreFile": true
+    },
+    "files": {
+        "ignoreUnknown": true,
+        "includes": ["**", "!**/node_modules", "!**/pnpm-lock.yaml", "!**/dist", "!**/coverage"]
+    },
+    "formatter": {
+        "enabled": true,
+        "useEditorconfig": true,
+        "formatWithErrors": false,
+        "indentStyle": "space",
+        "indentWidth": 4,
+        "lineEnding": "lf",
+        "lineWidth": 120,
+        "attributePosition": "auto",
+        "bracketSpacing": true
+    },
+    "assist": {
+        "actions": {
+            "source": {
+                "organizeImports": "on"
+            }
+        }
+    },
+    "linter": {
+        "enabled": true,
+        "rules": {
+            "recommended": false,
+            "complexity": {
+                "noBannedTypes": "error",
+                "noExtraBooleanCast": "error",
+                "noUselessCatch": "error",
+                "noUselessTypeConstraint": "error",
+                "noAdjacentSpacesInRegex": "error",
+                "noArguments": "error"
+            },
+            "correctness": {
+                "noConstantCondition": "error",
+                "noEmptyCharacterClassInRegex": "error",
+                "noEmptyPattern": "error",
+                "noInnerDeclarations": "error",
+                "noNonoctalDecimalEscape": "error",
+                "noPrecisionLoss": "error",
+                "noSelfAssign": "error",
+                "noSwitchDeclarations": "error",
+                "noUndeclaredVariables": "off",
+                "noUnsafeFinally": "error",
+                "noUnsafeOptionalChaining": "error",
+                "noUnusedLabels": "error",
+                "noUnusedVariables": "error",
+                "noUnusedImports": "error",
+                "useIsNan": "error",
+                "useValidForDirection": "error",
+                "useYield": "error",
+                "useValidTypeof": "error"
+            },
+            "style": {
+                "noNamespace": "error",
+                "useAsConstAssertion": "error",
+                "useBlockStatements": "off",
+                "useArrayLiterals": "off",
+                "useConst": "error",
+                "useImportType": "error"
+            },
+            "suspicious": {
+                "noAsyncPromiseExecutor": "error",
+                "noCatchAssign": "error",
+                "noClassAssign": "error",
+                "noCommentText": "error",
+                "noCompareNegZero": "error",
+                "noControlCharactersInRegex": "error",
+                "noDebugger": "error",
+                "noDuplicateCase": "error",
+                "noEmptyBlockStatements": "error",
+                "noExplicitAny": "error",
+                "noExtraNonNullAssertion": "error",
+                "noFallthroughSwitchClause": "error",
+                "noGlobalAssign": "error",
+                "noMisleadingCharacterClass": "error",
+                "noMisleadingInstantiator": "error",
+                "noPrototypeBuiltins": "error",
+                "noRedeclare": "off",
+                "noShadowRestrictedNames": "error",
+                "noSparseArray": "error",
+                "noUnsafeDeclarationMerging": "error",
+                "noVar": "error",
+                "noWith": "error"
+            }
+        }
+    },
+    "javascript": {
+        "formatter": {
+            "quoteProperties": "asNeeded",
+            "trailingCommas": "es5",
+            "semicolons": "always",
+            "arrowParentheses": "always",
+            "bracketSameLine": false,
+            "quoteStyle": "single",
+            "attributePosition": "auto",
+            "bracketSpacing": true
+        }
+    },
+    "overrides": [
+        {
+            "includes": ["**/*.yml", "**/*.yaml"],
+            "formatter": {
+                "indentWidth": 2
+            }
+        }
+    ]
+}
