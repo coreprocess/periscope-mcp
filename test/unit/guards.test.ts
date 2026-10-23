@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { before, describe, it } from 'node:test';
 import { QueryRejectedError } from '../../src/core/errors.ts';
 import { isAllowedCosmosRequest } from '../../src/sources/cosmos/guard.ts';
+import { checkReadOnlyStatement as checkTsql, lex as lexTsql } from '../../src/sources/mssql/lexer.ts';
 import { checkReadOnlyStatement, lex } from '../../src/sources/oracle/lexer.ts';
 import { collectReferences, ensureParser, parseReadOnlyQuery } from '../../src/sources/postgres/guard.ts';
 import { isAllowedOnWire, parseReadOnlyCommand } from '../../src/sources/redis/guard.ts';
@@ -118,6 +119,64 @@ describe('oracle lexer and statement filter', () => {
 
     it('allows database links only when configured', () => {
         checkReadOnlyStatement('SELECT * FROM t@remote', { allowDbLinks: true });
+    });
+});
+
+describe('sql server lexer and statement filter', () => {
+    const check = (sql: string) => checkTsql(sql, { allowLinkedServers: false });
+
+    it('handles brackets, nested comments, N-strings and variables', () => {
+        assert.deepEqual(
+            lexTsql("SELECT [a;]]b], N'x;''y', @p /* ; /* ; */ ; */ FROM t -- ;").map((t) => t.type),
+            ['word', 'quoted', 'punct', 'string', 'punct', 'variable', 'word', 'word']
+        );
+    });
+
+    it('accepts reading statements and strips one terminator', () => {
+        assert.equal(check('SELECT 1;').sql, 'SELECT 1');
+        for (const sql of [
+            'WITH a AS (SELECT 1 AS x) SELECT * FROM a',
+            '(SELECT 1) UNION ALL (SELECT 2)',
+            'SELECT 1 UNION SELECT 2 EXCEPT SELECT 3',
+            'SELECT TOP (10) * FROM dbo.t WITH (NOLOCK) ORDER BY id OFFSET 0 ROWS',
+            'SELECT * FROM app.dbo.t',
+            'SELECT * FROM app..t',
+            "SELECT JSON_VALUE(doc, '$.a') FROM t CROSS APPLY OPENJSON(doc)",
+            'SELECT * FROM t WHERE id = @id AND x = 0x1F',
+            'SELECT COUNT(*) OVER (PARTITION BY a) FROM #temp',
+        ]) {
+            check(sql);
+        }
+    });
+
+    it('rejects everything else', () => {
+        for (const sql of [
+            'SELECT 1 SELECT 2',
+            'SELECT 1 DELETE FROM t',
+            'SELECT 1; DROP TABLE t',
+            'WITH a AS (SELECT 1 AS x) DELETE FROM t',
+            'SELECT * INTO t2 FROM t',
+            "EXEC('SELECT 1')",
+            'xp_cmdshell',
+            'SELECT NEXT VALUE FOR s',
+            'SELECT * FROM t WITH (XLOCK)',
+            "SELECT * FROM OPENROWSET(BULK 'x', SINGLE_CLOB) AS f",
+            'SELECT * FROM srv.app.dbo.t',
+            'SELECT * FROM [srv].[app].[dbo].[t]',
+            'SELECT * FROM srv...t',
+            "SELECT 'open",
+            'SELECT [open',
+            'SELECT 1 /* open /* nested */',
+            'SELECT\u00a01',
+            'SET ROWCOUNT 1',
+            '',
+        ]) {
+            assert.throws(() => check(sql), QueryRejectedError, JSON.stringify(sql));
+        }
+    });
+
+    it('allows linked servers only when configured', () => {
+        checkTsql('SELECT * FROM srv.app.dbo.t', { allowLinkedServers: true });
     });
 });
 

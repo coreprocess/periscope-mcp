@@ -2,7 +2,7 @@
 
 Status: draft for review · 2026-10-22
 
-Periscope is an MCP server that gives AI agents **strictly read-only** query access to data sources: Postgres, Oracle, Azure Cosmos DB, Azure Blob Storage, Azure Log Analytics / Application Insights and Redis. Each project deploys its own instance and configures any number of data sources through environment variables.
+Periscope is an MCP server that gives AI agents **strictly read-only** query access to data sources: Postgres, Oracle, SQL Server (including Azure SQL), Azure Cosmos DB, Azure Blob Storage, Azure Log Analytics / Application Insights and Redis. Each project deploys its own instance and configures any number of data sources through environment variables.
 
 Agents get the full read capability of each source: free-form SQL, Cosmos queries, KQL and blob selection. All of it goes through one small set of generic tools. A query never returns data inline. It produces a **result** that the agent either pages through in windows, in context, or **downloads** over HTTP and processes with its own tools (`jq`, DuckDB, Python, …). The flow is the same for five rows or fifty million, and long-running exports come for free.
 
@@ -41,6 +41,7 @@ Writes cannot get through. Some source types never offer write operations at all
 | -------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `postgres`     | PostgreSQL (including Azure Database for PostgreSQL Flexible Server)                   | SQL (SELECT)                                                                                | Parquet                                                             | Extensions such as pgvector and DiskANN are supported for querying. Extensions that can cause side effects (dblink, oracle_fdw, pg_background, pg_cron) are accounted for in the guard.                                                    |
 | `oracle`       | Oracle Database 19c+                                                                   | SQL (SELECT)                                                                                | Parquet                                                             | Uses node-oracledb thin mode (DB 12.1+), so no Instant Client is needed. 19c is the reference version.                                                                                                                                     |
+| `mssql`        | SQL Server 2017+, Azure SQL Database, Azure SQL Managed Instance                       | T-SQL (SELECT)                                                                              | Parquet                                                             | Uses `mssql` on `tedious`. The driver is pinned with a small patch so that `decimal`/`numeric` and `money` values arrive as exact strings instead of floats.                                                                               |
 | `cosmos`       | Azure Cosmos DB for NoSQL                                                              | Cosmos NoSQL query language                                                                 | NDJSON (gzip)                                                       | The Mongo, Cassandra, Gremlin and Table APIs are out of scope.                                                                                                                                                                             |
 | `blob`         | Azure Blob Storage                                                                     | Blob selection: glob/prefix plus optional tag filter                                        | Listing: NDJSON (gzip); contents: referenced in place, never copied | Every listed blob is downloadable and readable through the result. Tables, Queues, Files and Data Lake are out of scope.                                                                                                                   |
 | `redis`        | Redis (including Azure Cache for Redis and Azure Managed Redis), standalone or cluster | Read-only Redis commands (allowlist); `SCAN` iterates to completion, optionally with values | NDJSON (gzip)                                                       | Useful for inspecting caches, sessions and job queues (lists, streams, sorted sets).                                                                                                                                                       |
@@ -62,7 +63,7 @@ claude.ai connector   ─┘                                       │   control
                                                                │   query workers ──▶ sources (read-only)   │
 agent sandbox (curl, DuckDB, …) ─────▶ /r/<signed-token> ─────▶│   data plane: downloads ◀── result store  │
                                                                └───────────────────────────────────────────┘
-                                                     Cosmos · Blob · Postgres · Oracle · Log Analytics · Redis
+                                                     Cosmos · Blob · Postgres · Oracle · SQL Server · Log Analytics · Redis
                                                      Result store: Periscope's own Blob container
 ```
 
@@ -113,7 +114,7 @@ Sources are configured as an indexed list:
 ```bash
 PERISCOPE_SOURCE_N=3                      # number of sources
 PERISCOPE_SOURCE_0_NAME=appdata
-PERISCOPE_SOURCE_0_TYPE=cosmos            # postgres | oracle | cosmos | blob | loganalytics | redis
+PERISCOPE_SOURCE_0_TYPE=cosmos            # postgres | oracle | mssql | cosmos | blob | loganalytics | redis
 PERISCOPE_SOURCE_0_<KEY>=...
 PERISCOPE_SOURCE_1_NAME=files
 PERISCOPE_SOURCE_1_TYPE=blob
@@ -148,6 +149,7 @@ PERISCOPE_SOURCE_1_TYPE=blob
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `postgres`     | `URL`, or `HOST`/`PORT`/`DATABASE`/`USER`/`PASSWORD`; or `AUTH=azure` (Entra token for the managed identity)                                                | `SSL`, `SEARCH_PATH`                                                                                                                                                                                                                              |
 | `oracle`       | `CONNECT_STRING` (EZConnect or full descriptor, so SID-style addresses work), or `HOST`/`PORT`/`SID`\|`SERVICE_NAME`; plus `USER`/`PASSWORD`                | `ALLOW_ROUTINES`, `ALLOW_DBLINKS`                                                                                                                                                                                                                 |
+| `mssql`        | `CONNECTION_STRING`, or `HOST`/`PORT`/`DATABASE`; plus `USER`/`PASSWORD`, or `AUTH=azure` (Entra token for the managed identity)                            | `ENCRYPT` (default `true`), `TRUST_SERVER_CERTIFICATE`, `READ_INTENT` (`ApplicationIntent=ReadOnly`; default `true` if the connection string contains it), `ALLOW_ROUTINES`, `ALLOW_LINKED_SERVERS`                                               |
 | `cosmos`       | `CONNECTION_STRING`, or `ENDPOINT` + `KEY`, or `ENDPOINT` + `AUTH=azure`                                                                                    | `DATABASE` (default database), `MAX_RU_PER_SEC` (throughput budget for queries), `LOW_PRIORITY` (use priority-based execution if enabled on the account)                                                                                          |
 | `blob`         | `CONNECTION_STRING`, or `ACCOUNT_URL` + `SAS`, or `ACCOUNT_URL` + `AUTH=azure`                                                                              | `CONTAINER` (default container)                                                                                                                                                                                                                   |
 | `loganalytics` | `WORKSPACE_ID`, or `RESOURCE_ID` (e.g. an App Insights resource, which scopes queries to it); `AUTH=azure`                                                  | `DEFAULT_TIMESPAN` (default `P1D`)                                                                                                                                                                                                                |
@@ -222,6 +224,7 @@ All tools carry the MCP annotations `readOnlyHint: true` and `destructiveHint: f
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `postgres`     | (none) lists schemas → `schema` lists tables and views (row estimates, comments) → `schema.table` lists columns, types, PK/FK, indexes (including vector indexes), comments                                                                                                                                                                                                                      |
 | `oracle`       | Same, via the `ALL_*` dictionary views (owner → objects → columns, constraints, indexes, comments)                                                                                                                                                                                                                                                                                               |
+| `mssql`        | Same, via the `sys.*` catalog views (schemas → tables and views with row estimates from `sys.partitions` and `MS_Description` comments → columns, keys, foreign keys, indexes, view definition)                                                                                                                                                                                                  |
 | `cosmos`       | databases → `db` lists containers → `db/container` returns partition key, indexing policy, vector policy, TTL, and a **schema inferred from sample documents** (field paths, types, frequency)                                                                                                                                                                                                   |
 | `blob`         | containers → `container/prefix/` lists sub-prefixes and blobs one level deep, with counts                                                                                                                                                                                                                                                                                                        |
 | `loganalytics` | (none) lists tables with data in the default timespan and their row counts → `Table` returns `getschema`                                                                                                                                                                                                                                                                                         |
@@ -233,17 +236,17 @@ All tools carry the MCP annotations `readOnlyHint: true` and `destructiveHint: f
 query(source, query, params?, options?) → { resultId }
 ```
 
-- **`query`** is SQL (Postgres, Oracle), Cosmos SQL or KQL. For `blob` sources it is a glob or prefix relative to the container (`invoices/2026/**/*.pdf`).
-- **`params`** are bind parameters: `$1` for Postgres, `:name` for Oracle, `@name` for Cosmos.
+- **`query`** is SQL (Postgres, Oracle), T-SQL (SQL Server), Cosmos SQL or KQL. For `blob` sources it is a glob or prefix relative to the container (`invoices/2026/**/*.pdf`).
+- **`params`** are bind parameters: `$1` for Postgres, `:name` for Oracle, `@name` for SQL Server and Cosmos (an object of names to values).
 - **`options`** depend on the type:
 
-| Type                 | Options                                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `postgres`, `oracle` | `explain` (the result is the execution plan instead of data)                                                  |
-| `cosmos`             | `database`, `container` (required), `partitionKey`                                                            |
-| `blob`               | `container`, `tagFilter` (blob index tag expression), `include` (`metadata`, `tags`, `versions`, `snapshots`) |
-| `loganalytics`       | `timespan` (ISO 8601 duration or interval)                                                                    |
-| `redis`              | `values` (with `SCAN`: also fetch each key's type, TTL and value, i.e. a key export)                          |
+| Type                          | Options                                                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `postgres`, `oracle`, `mssql` | `explain` (the result is the execution plan instead of data)                                                  |
+| `cosmos`                      | `database`, `container` (required), `partitionKey`                                                            |
+| `blob`                        | `container`, `tagFilter` (blob index tag expression), `include` (`metadata`, `tags`, `versions`, `snapshots`) |
+| `loganalytics`                | `timespan` (ISO 8601 duration or interval)                                                                    |
+| `redis`                       | `values` (with `SCAN`: also fetch each key's type, TTL and value, i.e. a key export)                          |
 
 **Synchronous checks before a result is created:** argument validation, permission checks, and the full read-only guard (§7.1), including parse errors. A rejected query fails immediately with a reason and never gets a `resultId`. Only execution errors (timeout, database error, throttling) show up later in `get_result`.
 
@@ -299,7 +302,7 @@ get_result(resultId, wait?) → metadata
 | `schema`                               | **SQL and KQL:** exact column names and types from the source. **Cosmos and blob listings:** inferred while materializing, with field paths, types and `presence` (share of rows that have the field). `sourceType` is the native type; `type` is the normalized type. Parquet results also carry `parquetType`, the exact stored type. For very wide schemas (e.g. heterogeneous Cosmos documents), only the first 200 columns are inline (`schemaTruncated: true`); the full schema is in the manifest. |
 | `window`                               | Limits for `read_result`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `download.manifestUrl`                 | **The single entry point for downloads.** The manifest (§6.4) lists every file with its row range, size and checksum, plus the block indexes. All its paths are relative to the manifest URL, so every other URL is derived from this one.                                                                                                                                                                                                                                                                |
-| `download.format`                      | Fixed per source type (§6.1): `parquet` for Postgres, Oracle and Log Analytics; `ndjson` with `compression: gzip` for Cosmos and blob listings. Files are served exactly as stored (§6.4), so `.ndjson.gz` arrives compressed and is read with `zcat`, DuckDB `read_json` or pandas.                                                                                                                                                                                                                      |
+| `download.format`                      | Fixed per source type (§6.1): `parquet` for Postgres, Oracle, SQL Server and Log Analytics; `ndjson` with `compression: gzip` for Cosmos and blob listings. Files are served exactly as stored (§6.4), so `.ndjson.gz` arrives compressed and is read with `zcat`, DuckDB `read_json` or pandas.                                                                                                                                                                                                          |
 | `download.fileCount`, `download.bytes` | Number of files and total download size, exactly as stored and transferred. This lets the agent decide whether to download at all without fetching the manifest.                                                                                                                                                                                                                                                                                                                                          |
 | `urlExpiresAt`                         | The manifest URL, and every URL derived from it, is short-lived. Calling `get_result` again issues a fresh manifest URL until the result expires. Only the base changes; relative paths stay the same.                                                                                                                                                                                                                                                                                                    |
 | `stats.sourceCost`                     | Source-specific cost: Cosmos RUs, rows scanned where available                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -349,7 +352,7 @@ curl -fsS "$M" | jq -r '.files[].path' | xargs -P4 -I{} curl -fsS --create-dirs 
 duckdb -c "SELECT status, count(*) FROM read_json('part-*.ndjson.gz') GROUP BY 1"
 ```
 
-For a Postgres, Oracle or Log Analytics result, the same flow yields `part-*.parquet`, read with `read_parquet('part-*.parquet')`.
+For a Postgres, Oracle, SQL Server or Log Analytics result, the same flow yields `part-*.parquet`, read with `read_parquet('part-*.parquet')`.
 
 ---
 
@@ -375,24 +378,25 @@ Everything except `state.json` is downloadable through the manifest URL. Blob re
 - **The first part closes early**, after a few thousand rows or a few seconds, whichever comes first. The first rows of a long-running query are then readable almost immediately. Later parts close by size only, so slow queries don't produce many tiny parts.
 - **Formats: exactly one per source type, with no format option.**
 
-  | Source type                          | Format                                                   | Why                                                                                                                                                                                                                                                                    |
-  | ------------------------------------ | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `postgres`, `oracle`, `loganalytics` | **Parquet**, ZSTD-compressed                             | The result schema is known from the driver metadata before the first row, so typed columns can be written directly. DuckDB, pandas and polars read Parquet natively and fast, and DuckDB can query it over HTTP with Range requests without downloading it completely. |
-  | `cosmos`                             | **NDJSON**, block-compressed gzip, one document per line | Documents are heterogeneous and nested. NDJSON keeps them exactly as stored, and `jq`, DuckDB `read_json` and pandas handle it directly.                                                                                                                               |
-  | `blob` (listing)                     | **NDJSON**, block-compressed gzip, one blob per line     | Metadata and tags are free-form maps.                                                                                                                                                                                                                                  |
-  | `blob` (contents)                    | **Referenced in place** in the source, never copied      | Served unchanged from the source (see blob results below).                                                                                                                                                                                                             |
-  | `redis`                              | **NDJSON**, block-compressed gzip                        | Redis values have different shapes per type (strings, hashes, lists, sets, sorted sets, streams, JSON).                                                                                                                                                                |
+  | Source type                                   | Format                                                   | Why                                                                                                                                                                                                                                                                    |
+  | --------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `postgres`, `oracle`, `mssql`, `loganalytics` | **Parquet**, ZSTD-compressed                             | The result schema is known from the driver metadata before the first row, so typed columns can be written directly. DuckDB, pandas and polars read Parquet natively and fast, and DuckDB can query it over HTTP with Range requests without downloading it completely. |
+  | `cosmos`                                      | **NDJSON**, block-compressed gzip, one document per line | Documents are heterogeneous and nested. NDJSON keeps them exactly as stored, and `jq`, DuckDB `read_json` and pandas handle it directly.                                                                                                                               |
+  | `blob` (listing)                              | **NDJSON**, block-compressed gzip, one blob per line     | Metadata and tags are free-form maps.                                                                                                                                                                                                                                  |
+  | `blob` (contents)                             | **Referenced in place** in the source, never copied      | Served unchanged from the source (see blob results below).                                                                                                                                                                                                             |
+  | `redis`                                       | **NDJSON**, block-compressed gzip                        | Redis values have different shapes per type (strings, hashes, lists, sets, sorted sets, streams, JSON).                                                                                                                                                                |
 
   `read_result` always returns the compact columns-plus-rows format, regardless of the stored format.
 - **Parquet type mapping** (tabular sources). The mapping is defined once per source type and documented:
   - Integers, floats, booleans, strings, dates and timestamps map to their Parquet logical types (timestamps normalized to UTC).
-  - Exact decimals with known precision (`numeric(p,s)`, Oracle `NUMBER(p,s)`) become `DECIMAL(p,s)`. Unconstrained `numeric` / `NUMBER` becomes `DECIMAL(38,s)` when it fits, otherwise a string, so values never silently lose precision.
+  - Exact decimals with known precision (`numeric(p,s)`, Oracle `NUMBER(p,s)`, SQL Server `decimal(p,s)`) become `DECIMAL(p,s)`. Unconstrained `numeric` / `NUMBER` becomes `DECIMAL(38,s)` when it fits, otherwise a string, so values never silently lose precision. SQL Server `money` becomes `DECIMAL(19,4)` and `smallmoney` `DECIMAL(10,4)`.
+  - SQL Server `bigint` becomes INT64. `datetime2` and `datetimeoffset` keep microseconds (their 100 ns ticks are truncated to microseconds), and `time` becomes a string with 7 fractional digits.
   - `json`/`jsonb` and KQL `dynamic` become strings with the JSON logical type.
   - Arrays and pgvector `vector` become lists.
-  - `bytea`/`RAW`/`BLOB` become binary, and `CLOB` becomes a string.
+  - `bytea`/`RAW`/`BLOB`/`varbinary` become binary, and `CLOB` becomes a string.
   - Intervals, ranges and other exotic types become strings.
   - Reader note for agents: polars reads JSON-typed columns as binary, so they need a cast to string. DuckDB and pyarrow read them as text.
-- **`explain` results** are Parquet with a single text column (one plan line per row).
+- **`explain` results** are Parquet with a single text column (one plan line per row). For SQL Server it is the estimated plan from `SET SHOWPLAN_TEXT`: the statement is compiled, not executed, and the login needs the `SHOWPLAN` permission.
 - **Blob results:**
   - **The result is the listing:** one row per selected blob, with name, size, content type, last modified, ETag (and version ID or snapshot if included), and metadata and tags if requested.
   - **Contents are referenced, not copied.** Every row carries a `file` path, relative to the manifest URL. It is used for downloads and for `read_result` (text and image windows). Periscope serves these paths straight from the source storage account through its read-only client (§6.4). Blobs that already exist are never duplicated, the result is complete as soon as the listing is, and the result store only holds the listing and indexes.
@@ -412,6 +416,7 @@ Everything except `state.json` is downloadable through the manifest URL. Blob re
 - **Consistency:**
   - **Postgres:** the query runs in a single `REPEATABLE READ READ ONLY` transaction, so the result is one snapshot.
   - **Oracle:** `SET TRANSACTION READ ONLY` gives read consistency across the whole query. Very long queries risk ORA-01555 (snapshot too old).
+  - **SQL Server:** the query runs in a `SNAPSHOT` transaction when the database allows snapshot isolation, so the result is one snapshot; otherwise in `READ COMMITTED`. The transaction is always rolled back.
   - **Cosmos, Log Analytics and Redis** have no cross-page snapshot. Results reflect the data at the time each page was read.
 
 ### 6.2 Physical layout and random access
@@ -455,12 +460,13 @@ Replicas cache block indexes and Parquet footers in a small in-memory LRU, so co
 - **Per source type:**
   - **Postgres:** server-side cursor inside the read-only transaction; `statement_timeout` is set from `MAX_QUERY_DURATION`.
   - **Oracle:** `queryStream` with a large fetch array size; `callTimeout` per round trip.
+  - **SQL Server:** a streaming request inside the transaction, paused and resumed for backpressure; its request timeout is set from the time left until `MAX_QUERY_DURATION`.
   - **Cosmos:** paged query iteration, parallel across feed ranges, throttled to `MAX_RU_PER_SEC` so exports don't starve the application (429s). Uses priority-based execution if `LOW_PRIORITY` is set and the account supports it.
   - **Log Analytics:** a single query is capped by the service (about 500k rows and ~100 MB). Periscope splits large queries into time windows and writes one or more parts per window. Queries that can't be split (e.g. global aggregations) fail with a clear error when they exceed the cap.
   - **Blob:** listing via paged list or tag search. Contents are not copied (§6.1).
   - **Redis:** a single command, or a cursor loop for `SCAN` (per shard in cluster mode), throttled to `MAX_OPS_PER_SEC`. Values are fetched in pipelined batches. Large collections are fetched in chunks.
 - **Limits:** concurrent queries per user, result size and duration per source, and a total size limit for the result store.
-- **Cancellation:** `cancel_query` stops the job (`pg_cancel_backend` on Periscope's own session, `connection.break()` for Oracle, aborting the Cosmos and Log Analytics iterators).
+- **Cancellation:** `cancel_query` stops the job (`pg_cancel_backend` on Periscope's own session, `connection.break()` for Oracle, `request.cancel()` (a TDS attention) for SQL Server, aborting the Cosmos and Log Analytics iterators).
 
 ### 6.4 Downloads
 
@@ -653,7 +659,7 @@ These APIs have a fixed set of operations, and Periscope only implements the rea
 
 The Cosmos NoSQL query language has no DML, and UDFs cannot write, so query strings need no filtering. For Cosmos, the wire guard is passed as the SDK's public `httpClient` option, through which every request goes (data plane, metadata, account discovery). For Storage it is a request policy factory appended to the pipeline of the only client the source creates; child clients inherit it. Two read-like operations are `POST` and therefore blocked as well: user delegation keys and quick query, neither of which Periscope uses.
 
-#### B. Free-form query languages, filtered: Postgres, Oracle and Redis
+#### B. Free-form query languages, filtered: Postgres, Oracle, SQL Server and Redis
 
 Several independent layers per type. All guard checks run synchronously in `query`, before a result is created.
 
@@ -701,6 +707,27 @@ Oracle before 23ai has no session-level read-only mode, and DDL commits implicit
 4. **System package allowlist.** References to `DBMS_*`, `UTL_*` and `SYS.*` are allowed only for read-only packages and functions, such as `DBMS_METADATA.GET_DDL`, `DBMS_LOB.SUBSTR`/`GETLENGTH` and `DBMS_XPLAN`. Everything else is blocked, e.g. `DBMS_PIPE`, `DBMS_LOCK`, `UTL_HTTP`.
 5. **Optional, engine-side.** A `BEFORE DDL` trigger that raises an error when `SYS_CONTEXT('USERENV','MODULE') = 'periscope'`. Periscope sets the module name on every connection. This adds DDL protection in the database itself without needing a separate user. It is a recommended operator setup, not a requirement.
 6. **Oracle 23ai and newer:** additionally enable the session-level read-only mode where available.
+
+**SQL Server (SQL Server, Azure SQL Database, Azure SQL Managed Instance)**
+
+SQL Server has no read-only transaction mode, and T-SQL runs several statements in one batch. So the layers are a transaction that is always rolled back, a strict statement filter, a routine inventory, and optionally a read-only replica:
+1. **Engine: transaction that is always rolled back.** Every query runs in a transaction (`SNAPSHOT` or `READ COMMITTED`, §6.1) that ends with `ROLLBACK`. There is never a COMMIT. The experiments showed that INSERT/UPDATE/DELETE and `CREATE`/`DROP TABLE` are undone. A sequence advanced by `NEXT VALUE FOR` is not, `CREATE DATABASE` is not allowed inside a transaction at all, and side effects outside the database (extended procedures, OLE Automation, CLR, linked servers) are not undone either. The next two layers cover those.
+2. **Statement filter.** A strict lexer handles comments (which nest in T-SQL), string literals including `N'…'`, bracketed and quoted identifiers, and variables. Any character it does not recognize leads to rejection. T-SQL runs several statements in one batch even without semicolons (`SELECT 1 DELETE FROM t`), so checking the first keyword is not enough. Rules:
+   - first keyword `SELECT` or `WITH`
+   - a second top-level `SELECT` only directly after `UNION`, `EXCEPT` or `INTERSECT` (`ALL`)
+   - none of these keywords anywhere in the statement: statement keywords (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `EXEC`/`EXECUTE`, `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `GRANT`, `DBCC`, `BACKUP`, `BULK`, …), batch and control-flow keywords (`SET`, `DECLARE`, `BEGIN`, `WAITFOR`, `USE`, `GO`, …), `INTO` (`SELECT … INTO` creates a table), the remote rowset functions `OPENQUERY`, `OPENROWSET` and `OPENDATASOURCE`, and locking hints that hold or escalate locks for the whole export (`UPDLOCK`, `XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `PAGLOCK`, `SERIALIZABLE`, `REPEATABLEREAD`)
+   - no `NEXT VALUE FOR` (the sequence advances despite the rollback)
+   - no four-part names (`server.database.schema.object`), which reach linked servers, unless `ALLOW_LINKED_SERVERS`
+   - no `;`, except one trailing `;`, which is removed before the statement is sent
+3. **Routine inventory** (at startup, refreshed every 10 minutes). User-defined functions cannot change data, but the experiments showed that a function can still run extended stored procedures (`EXEC xp_msver` inside a function worked). So:
+   - Functions whose definition uses `EXEC`, `xp_…`, `sp_OA…` (OLE Automation) or a remote rowset, CLR functions, and functions whose definition cannot be read are always blocked.
+   - **Strict mode.** If the login is `sysadmin`, `xp_cmdshell`, OLE Automation or CLR is enabled, the database is `TRUSTWORTHY`, or linked servers exist, every user-defined function is blocked unless allowlisted with `ALLOW_ROUTINES`, and so is every view whose definition cannot be read. `list_sources` names the reasons.
+   - Views and functions that reference a linked server are blocked unless `ALLOW_LINKED_SERVERS`.
+
+   Everything that depends on a blocked object (per `sys.sql_expression_dependencies`) is blocked too, transitively. Matching is **by name**, as for Oracle. A reviewed routine can be cleared per source with `ALLOW_ROUTINES`; its dependents are then not blocked because of it.
+4. **Read-only replica (optional, engine-side).** With `READ_INTENT`, connections use `ApplicationIntent=ReadOnly` and are routed to a readable secondary where the service provides one; the engine then rejects every write. Periscope reports this in `list_sources` when the database's `Updateability` (`DATABASEPROPERTYEX`) is `READ_ONLY`.
+
+The credential is reported as write-capable if the login is `sysadmin`, `db_owner`, `db_datawriter` or `db_ddladmin`, or holds `INSERT`, `UPDATE`, `DELETE`, `ALTER` or `CREATE TABLE` on the database, unless it is connected to a read-only replica.
 
 **Redis**
 
@@ -815,15 +842,16 @@ Entra has no Dynamic Client Registration and no Client ID Metadata Documents, so
 
 Periscope uses **its own user-assigned managed identity** and its own secrets. Don't reuse the application's identity, which typically holds write roles. Users are authorized at Periscope, and the data sources only trust Periscope (trusted subsystem). Read-only roles should be assigned where it costs nothing, as extra defense:
 
-| Target           | Recommended credential                                                                                                                                                                                           | Required for the guarantee?                           |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| Cosmos DB        | Managed identity, _Cosmos DB Built-in Data Reader_ (`…0001`). Alternatively a connection string.                                                                                                                 | No (wire guard)                                       |
-| Blob (source)    | Managed identity, _Storage Blob Data Reader_. Alternatively a connection string or SAS.                                                                                                                          | No (wire guard)                                       |
-| Log Analytics    | Managed identity, _Log Analytics Reader_ on the workspace                                                                                                                                                        | No (query API is read-only)                           |
-| Redis            | A read-only ACL user (`+@read -@write -@dangerous -@scripting`) or a _Data Reader_-style access policy where available; otherwise the existing credential. Entra auth with the managed identity where supported. | No (command allowlist, client guard)                  |
-| Postgres         | A read-only role (e.g. `pg_read_all_data`), Entra auth for the managed identity, or an existing credential                                                                                                       | No (layers B1–B3)                                     |
-| Oracle           | A read-only user where possible, otherwise a shared credential                                                                                                                                                   | No (layers B1–B6)                                     |
-| **Result store** | Managed identity, _Storage Blob Data Contributor_ scoped to the result container only                                                                                                                            | n/a. This is Periscope's own storage, never a source. |
+| Target           | Recommended credential                                                                                                                                                                                                                                   | Required for the guarantee?                           |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Cosmos DB        | Managed identity, _Cosmos DB Built-in Data Reader_ (`…0001`). Alternatively a connection string.                                                                                                                                                         | No (wire guard)                                       |
+| Blob (source)    | Managed identity, _Storage Blob Data Reader_. Alternatively a connection string or SAS.                                                                                                                                                                  | No (wire guard)                                       |
+| Log Analytics    | Managed identity, _Log Analytics Reader_ on the workspace                                                                                                                                                                                                | No (query API is read-only)                           |
+| Redis            | A read-only ACL user (`+@read -@write -@dangerous -@scripting`) or a _Data Reader_-style access policy where available; otherwise the existing credential. Entra auth with the managed identity where supported.                                         | No (command allowlist, client guard)                  |
+| Postgres         | A read-only role (e.g. `pg_read_all_data`), Entra auth for the managed identity, or an existing credential                                                                                                                                               | No (layers B1–B3)                                     |
+| Oracle           | A read-only user where possible, otherwise a shared credential                                                                                                                                                                                           | No (layers B1–B6)                                     |
+| SQL Server       | A login with `db_datareader` (plus `VIEW DEFINITION` for the routine inventory and `SHOWPLAN` for `explain`), Entra auth for the managed identity, otherwise a shared credential. Read-only at the server only with a read-only replica (`READ_INTENT`). | No (layers B1–B4)                                     |
+| **Result store** | Managed identity, _Storage Blob Data Contributor_ scoped to the result container only                                                                                                                                                                    | n/a. This is Periscope's own storage, never a source. |
 
 `list_sources` reports the credential state for information only. No source is refused because its credential can write.
 
@@ -879,7 +907,7 @@ It outputs the internal FQDN for the gateway configuration.
 **Language: TypeScript on Node.js 24 LTS.**
 - **Team fit.** It is the stack of the teams that will run and extend Periscope, which matters for a security-critical server.
 - **MCP SDK.** The TypeScript MCP SDK is the reference implementation, including Streamable HTTP.
-- **Drivers.** Every source has a first-class driver: `pg`, Oracle's official `oracledb` (thin mode, no Instant Client), and Microsoft's official Azure SDKs for Cosmos DB, Blob Storage, Monitor and Identity.
+- **Drivers.** Every source has a first-class driver: `pg`, Oracle's official `oracledb` (thin mode, no Instant Client), `mssql` on Microsoft's `tedious`, and Microsoft's official Azure SDKs for Cosmos DB, Blob Storage, Monitor and Identity.
 - **Alternatives considered:**
   - **Go:** limited Cosmos SDK (historically weak cross-partition queries), only community Oracle drivers.
   - **Rust:** its Oracle driver needs the Instant Client, and its Cosmos SDK is a preview.
@@ -887,19 +915,19 @@ It outputs the internal FQDN for the gateway configuration.
 
 **Stack**
 
-| Area                | Choice                                                                                                                                                                                                                          | Notes                                                                                                                                                 |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime and tooling | Node.js 24 LTS, TypeScript (strict), pnpm, Biome, `node:test`, Testcontainers                                                                                                                                                   |                                                                                                                                                       |
-| HTTP                | Express 5                                                                                                                                                                                                                       | One server for `/mcp` and `/r/…`. The MCP SDK's Streamable HTTP transport plugs in without adapters. Range responses are a few lines of our own code. |
-| MCP                 | `@modelcontextprotocol/server`, `/express`, `/node` (v2 SDK)                                                                                                                                                                    | Stateless Streamable HTTP (2025 and 2026 protocol revisions), and stdio. Bearer validation uses the SDK's `requireBearerAuth` with our Entra verifier on `jose`. |
-| Validation          | `zod`                                                                                                                                                                                                                           | Configuration and tool schemas                                                                                                                        |
-| Sources             | `pg` with `pg-cursor`, `oracledb` (thin), `@azure/cosmos`, `@azure/storage-blob`, the Log Analytics REST query API via `fetch`, `@redis/client` (pinned, with `@redis/entraid`), `@azure/identity`                              | The Redis wire guard patches the client's RESP encoder, so the version is pinned and covered by tests.                                                |
-| Guards              | `libpg-query` (Postgres' own parser), our own Oracle lexer                                                                                                                                                                      |                                                                                                                                                       |
-| NDJSON              | `node:zlib`                                                                                                                                                                                                                     | One gzip member per block                                                                                                                             |
-| **Parquet writer**  | **`hyparquet-writer`** (pure JS, MIT)                                                                                                                                                                                           | See below                                                                                                                                             |
-| **Parquet reader**  | **`hyparquet`** (pure JS, MIT)                                                                                                                                                                                                  | See below                                                                                                                                             |
-| Logging and audit   | `pino`                                                                                                                                                                                                                          | JSON lines to stdout                                                                                                                                  |
-| Build and image     | `tsc` / esbuild, slim Node 24 image                                                                                                                                                                                             | The chosen stack is pure JS/WASM, so a distroless image is possible                                                                                   |
+| Area                | Choice                                                                                                                                                                                                                                         | Notes                                                                                                                                                                                              |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime and tooling | Node.js 24 LTS, TypeScript (strict), pnpm, Biome, `node:test`, Testcontainers                                                                                                                                                                  |                                                                                                                                                                                                    |
+| HTTP                | Express 5                                                                                                                                                                                                                                      | One server for `/mcp` and `/r/…`. The MCP SDK's Streamable HTTP transport plugs in without adapters. Range responses are a few lines of our own code.                                              |
+| MCP                 | `@modelcontextprotocol/server`, `/express`, `/node` (v2 SDK)                                                                                                                                                                                   | Stateless Streamable HTTP (2025 and 2026 protocol revisions), and stdio. Bearer validation uses the SDK's `requireBearerAuth` with our Entra verifier on `jose`.                                   |
+| Validation          | `zod`                                                                                                                                                                                                                                          | Configuration and tool schemas                                                                                                                                                                     |
+| Sources             | `pg` with `pg-cursor`, `oracledb` (thin), `mssql` (on `tedious`, pinned and patched), `@azure/cosmos`, `@azure/storage-blob`, the Log Analytics REST query API via `fetch`, `@redis/client` (pinned, with `@redis/entraid`), `@azure/identity` | The Redis wire guard patches the client's RESP encoder, so the version is pinned and covered by tests. A small patch to `tedious` returns `decimal`/`numeric` and `money` values as exact strings. |
+| Guards              | `libpg-query` (Postgres' own parser), our own Oracle and T-SQL lexers                                                                                                                                                                          |                                                                                                                                                                                                    |
+| NDJSON              | `node:zlib`                                                                                                                                                                                                                                    | One gzip member per block                                                                                                                                                                          |
+| **Parquet writer**  | **`hyparquet-writer`** (pure JS, MIT)                                                                                                                                                                                                          | See below                                                                                                                                                                                          |
+| **Parquet reader**  | **`hyparquet`** (pure JS, MIT)                                                                                                                                                                                                                 | See below                                                                                                                                                                                          |
+| Logging and audit   | `pino`                                                                                                                                                                                                                                         | JSON lines to stdout                                                                                                                                                                               |
+| Build and image     | `tsc` / esbuild, slim Node 24 image                                                                                                                                                                                                            | The chosen stack is pure JS/WASM, so a distroless image is possible                                                                                                                                |
 
 **Parquet: research results**
 
@@ -936,6 +964,7 @@ src/
     adapter.ts             read-only source interface: describe, validate, stream
     postgres/              adapter, describe, guard (AST), inventory, posture
     oracle/                adapter, describe, guard (lexer), inventory, posture
+    mssql/                 adapter, describe, guard (lexer), inventory, types
     cosmos/                adapter, describe (schema sampling), wire-guard, RU throttle
     blob/                  adapter, wire-guard (pipeline policy)
     loganalytics/          adapter, describe, wire-guard, time-window splitting
@@ -957,6 +986,7 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
 - **Test environments:**
   - `pgvector/pgvector:pg17` with `dblink` and `oracle_fdw`
   - `gvenzl/oracle-xe:21-slim`, closest to 19c among the free images (`oracle-free` is 23ai and accepts syntax 19c rejects); a 19c image from Oracle's container registry where licensing allows
+  - `mcr.microsoft.com/mssql/server:2022-latest` in CI; Azure SQL Edge (the same engine) locally on ARM64
   - Azurite
   - the Cosmos DB emulator
   - Redis, standalone and cluster, with RedisJSON
@@ -965,6 +995,7 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
   - an autonomous-transaction function and a view on top of it
   - a function using `EXECUTE IMMEDIATE`
   - a dblink / `oracle_execute` wrapper
+  - a T-SQL function running an extended procedure, wrapped by another function and by views
   - a Cosmos stored procedure
 - **Attack corpus:**
   - DDL and DML, CTE tricks
@@ -999,9 +1030,9 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
 
 ## 11. Implementation status
 
-All of §1–§10 is implemented. Instead of a spike, targeted experiments settled the technical questions before the build (Parquet streaming and exact decimals, Cosmos and Blob wire guards, block-gzip compatibility, Postgres and Oracle write paths, the Redis client guard, the MCP v2 server). Their findings are reflected above.
+All of §1–§10 is implemented. Instead of a spike, targeted experiments settled the technical questions before the build (Parquet streaming and exact decimals, Cosmos and Blob wire guards, block-gzip compatibility, Postgres, Oracle and SQL Server write paths, the Redis client guard, the MCP v2 server). Their findings are reflected above.
 
-Every source is tested against a real database or emulator with write-capable credentials (`test/integration`): Postgres (`pgvector/pgvector:pg17`), Oracle (Free 23ai locally on ARM64, XE 21 in CI), the Cosmos DB emulator, Azurite, Redis 8, and a mock of the Log Analytics query API. An end-to-end test runs the real process with Entra-style tokens from a local issuer, the MCP client, downloads and stdio mode.
+Every source is tested against a real database or emulator with write-capable credentials (`test/integration`): Postgres (`pgvector/pgvector:pg17`), Oracle (Free 23ai locally on ARM64, XE 21 in CI), SQL Server (Azure SQL Edge locally on ARM64, SQL Server 2022 in CI), the Cosmos DB emulator, Azurite, Redis 8, and a mock of the Log Analytics query API. An end-to-end test runs the real process with Entra-style tokens from a local issuer, the MCP client, downloads and stdio mode.
 
 What remains is verification in a real deployment (§12).
 
@@ -1021,7 +1052,7 @@ What remains is verification in a real deployment (§12).
 **Decided**
 - Result retention: 24 hours (`PT24H`).
 - Results are shared: access follows source permissions, not the user who started the query (§7.3).
-- One result format per source type, with no format option: Parquet (ZSTD) for Postgres, Oracle and Log Analytics; gzip-compressed NDJSON for Cosmos, Redis and blob listings (§6.1).
+- One result format per source type, with no format option: Parquet (ZSTD) for Postgres, Oracle, SQL Server and Log Analytics; gzip-compressed NDJSON for Cosmos, Redis and blob listings (§6.1).
 - Blob contents are referenced, never copied. Listing rows point to the source blobs, which Periscope serves read-only from the source, pinned to the ETag (or version or snapshot) at query time (§6.1, §6.4).
 - Redis is a source type: read-only command allowlist, `SCAN` with optional values as key export, a client guard on every wire command, and optional replica reads (§7.1).
 - Compression at rest, files served exactly as stored. NDJSON is block-compressed gzip (independent ~1 MiB members) with a block index, and Parquet uses row groups and the page index. Windows cost one ranged read, and downloads need no transport compression (§6.2, §6.4).

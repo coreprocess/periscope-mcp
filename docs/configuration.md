@@ -43,7 +43,7 @@ All configuration comes from environment variables. For local use, `--env-file <
 ```bash
 PERISCOPE_SOURCE_N=3                 # number of sources; indices run 0 … N-1
 PERISCOPE_SOURCE_<i>_NAME=…          # identifier used in tool calls: [a-z0-9_-]{1,64}, unique
-PERISCOPE_SOURCE_<i>_TYPE=…          # postgres | oracle | cosmos | blob | loganalytics | redis
+PERISCOPE_SOURCE_<i>_TYPE=…          # postgres | oracle | mssql | cosmos | blob | loganalytics | redis
 PERISCOPE_SOURCE_<i>_<KEY>=…
 ```
 
@@ -79,6 +79,21 @@ Keys for every source:
 | `USER`, `PASSWORD` | Required |
 | `ALLOW_ROUTINES` | Comma-separated routines (`OWNER.NAME` or `NAME`) cleared after review |
 | `ALLOW_DBLINKS` | `true` to allow `@dblink` references |
+
+### `mssql`
+
+SQL Server 2017+, Azure SQL Database and Azure SQL Managed Instance.
+
+| Key | Description |
+|---|---|
+| `CONNECTION_STRING` | ADO.NET style, e.g. `Server=tcp:host,1433;Database=db;User Id=…;Password=…;Encrypt=true` |
+| `HOST`, `PORT`, `DATABASE`, `USER`, `PASSWORD` | Alternative to `CONNECTION_STRING`; `PORT` defaults to `1433` |
+| `AUTH` | `azure`: Entra token instead of `USER`/`PASSWORD` (Azure SQL) |
+| `ENCRYPT` | Default `true` |
+| `TRUST_SERVER_CERTIFICATE` | Default `false`; `true` only for self-signed test servers |
+| `READ_INTENT` | `true`: connect with `ApplicationIntent=ReadOnly` (readable secondary). Defaults to `true` when the connection string contains it. |
+| `ALLOW_ROUTINES` | Comma-separated functions (`schema.name` or `name`) cleared after review |
+| `ALLOW_LINKED_SERVERS` | `true` to allow four-part names and views that use linked servers |
 
 ### `cosmos`
 
@@ -127,6 +142,7 @@ Authentication is always Entra (`DefaultAzureCredential`) with the role *Log Ana
 |---|---|---|
 | `postgres` | array for `$1, $2, …` | `explain`, `analyze` |
 | `oracle` | object for `:name` or array for `:1, :2` | `explain` |
+| `mssql` | object for `@name` | `explain` (estimated plan, `SET SHOWPLAN_TEXT`) |
 | `cosmos` | `{ "@name": value }` or `[{ name, value }]` | `database`, `container` (required), `partitionKey` |
 | `blob` | not used | `container`, `tagFilter`, `include` (`metadata`, `tags`, `versions`, `snapshots`) |
 | `loganalytics` | not used | `timespan` (ISO 8601 duration or `start/end` interval) |

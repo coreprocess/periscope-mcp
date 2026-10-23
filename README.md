@@ -6,6 +6,7 @@ Periscope is an MCP server that gives AI agents **strictly read-only** query acc
 |---|---|---|
 | PostgreSQL | SQL (one `SELECT`) | Parquet |
 | Oracle Database (19c+) | SQL (one `SELECT`) | Parquet |
+| SQL Server / Azure SQL | T-SQL (one `SELECT`) | Parquet |
 | Azure Cosmos DB for NoSQL | Cosmos NoSQL query language | NDJSON (gzip) |
 | Azure Blob Storage | Glob or prefix, optional tag filter | NDJSON listing; contents referenced in place |
 | Azure Log Analytics / Application Insights | KQL | Parquet |
@@ -101,6 +102,7 @@ The full reference is in [docs/configuration.md](docs/configuration.md).
 | Log Analytics | Query API only (it has no write operations); control commands rejected |
 | PostgreSQL | `READ ONLY` transaction, always rolled back; syntax-tree guard with the Postgres parser (single `SELECT`, no locking, no data-modifying CTEs); side-effect function denylist; inventory that parses view definitions and switches to strict mode when `dblink`-style functions are reachable |
 | Oracle | `SET TRANSACTION READ ONLY`, always rolled back; strict lexer (single `SELECT`, no PL/SQL, no DDL, no `FOR UPDATE`, no `NEXTVAL`); system package allowlist; routine inventory against autonomous transactions and dynamic SQL |
+| SQL Server | Transaction that is always rolled back; strict T-SQL lexer (single `SELECT`, no `EXEC`, no DML/DDL, no `SELECT … INTO`, no `NEXT VALUE FOR`, no remote rowsets or locking hints); function inventory against extended procedures, OLE Automation, CLR and linked servers, with strict mode for sysadmin logins and risky server settings; optional `ApplicationIntent=ReadOnly` |
 | Redis | Static allowlist of read-only, non-blocking commands; guard on every command the client writes to the socket; optional replica reads |
 
 Each layer is tested on its own against real databases with write-capable credentials (see `test/integration`).
@@ -111,7 +113,7 @@ Each layer is tested on its own against real databases with write-capable creden
 pnpm lint          # Biome
 pnpm typecheck     # TypeScript
 pnpm test          # unit tests
-pnpm test:integration   # needs Docker: Postgres, Oracle, Cosmos emulator, Azurite, Redis
+pnpm test:integration   # needs Docker: Postgres, Oracle, SQL Server, Cosmos emulator, Azurite, Redis
 pnpm build
 ```
 
