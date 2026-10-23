@@ -7,7 +7,7 @@
     },
     "files": {
         "ignoreUnknown": true,
-        "includes": ["**", "!**/node_modules", "!**/pnpm-lock.yaml", "!**/dist", "!**/coverage"]
+        "includes": ["**", "!**/node_modules", "!**/pnpm-lock.yaml", "!**/dist", "!**/coverage", "!**/*.md"]
     },
     "formatter": {
         "enabled": true,

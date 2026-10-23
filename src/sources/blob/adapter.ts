@@ -280,5 +280,7 @@ export class BlobAdapter implements SourceAdapter, FileProvider {
         return { level: 'prefix', container: containerName, prefix, prefixes, blobs, truncated };
     }
 
-    async close(): Promise<void> {}
+    async close(): Promise<void> {
+        // the blob client holds no connections that need closing
+    }
 }

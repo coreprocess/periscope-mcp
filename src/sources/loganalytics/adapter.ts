@@ -296,5 +296,7 @@ export class LogAnalyticsAdapter implements SourceAdapter {
         };
     }
 
-    async close(): Promise<void> {}
+    async close(): Promise<void> {
+        // stateless HTTP calls; nothing to close
+    }
 }

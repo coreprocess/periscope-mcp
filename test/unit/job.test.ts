@@ -30,7 +30,9 @@ class FakeAdapter implements SourceAdapter {
             ...overrides,
         } as SourceConfig;
     }
-    async init(): Promise<void> {}
+    async init(): Promise<void> {
+        // nothing to connect
+    }
     info(): SourceInfo {
         return {} as SourceInfo;
     }
@@ -43,7 +45,9 @@ class FakeAdapter implements SourceAdapter {
     async execute(_prepared: PreparedQuery, context: ExecutionContext): Promise<ResultStream> {
         return this.#stream(context);
     }
-    async close(): Promise<void> {}
+    async close(): Promise<void> {
+        // nothing to close
+    }
 }
 
 const documents = (count: number, delayMs = 0) =>

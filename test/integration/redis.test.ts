@@ -171,11 +171,7 @@ describe('redis source', () => {
         assert.equal(manifest.rowCount, 300 + 2 + 7);
         const rows = await harness.service.readRows(resultId, 0, 500, ['key', 'type', 'ttl', 'value']);
         const byKey = new Map(rows.rows.map((r) => [r[0], r]));
-        assert.equal(
-            (byKey.get('big:list')?.[3] as string).startsWith('['),
-            true,
-            'large list is summarized in windows'
-        );
+        assert.equal(String(byKey.get('big:list')?.[3]).startsWith('['), true, 'large list is summarized in windows');
         assert.deepEqual(byKey.get('doc:1')?.[3], [{ a: 1, b: [1, 2] }]);
         assert.deepEqual(byKey.get('bin:1')?.[3], { encoding: 'base64', data: '/wD+' });
         assert.ok(Number(byKey.get('str:0')?.[2]) > 0);

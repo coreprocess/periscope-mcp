@@ -22,12 +22,12 @@ const fake = (stream: () => ResultStream): SourceAdapter => ({
         maxQueryDurationMs: 60_000,
         maxResultBytes: 1024 ** 3,
     } as SourceConfig,
-    init: async () => {},
+    init: async () => undefined,
     info: () => ({}) as SourceInfo,
     describe: async () => ({}),
     validate: async (query: string): Promise<PreparedQuery> => ({ query, params: null, options: {} }),
     execute: async () => stream(),
-    close: async () => {},
+    close: async () => undefined,
 });
 
 describe('azure blob result store', () => {
