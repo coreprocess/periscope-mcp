@@ -47,7 +47,7 @@ The guarantee is the product. It must hold even when the configured credential c
   never import the result store writers.
 - Every guard fails closed: whatever it does not fully understand, it rejects.
 - A change to a guard — the Postgres syntax-tree guard and inventory, the Oracle lexer and
-  inventory, the SQL Server lexer and inventory, the Redis allowlist and wire guard, the Cosmos and Blob wire guards, the Log
+  inventory, the SQL Server lexer and inventory, the KIM query check and wire allowlist, the Redis allowlist and wire guard, the Cosmos and Blob wire guards, the Log
   Analytics endpoint — comes with unit tests in `test/unit/guards.test.ts` and an attack case in
   the source's integration test. Integration tests use write-capable credentials and verify
   that the data is unchanged.

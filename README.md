@@ -11,6 +11,7 @@ Periscope is an MCP server that gives AI agents **strictly read-only** query acc
 | Azure Blob Storage | Glob or prefix, optional tag filter | NDJSON listing; contents referenced in place |
 | Azure Log Analytics / Application Insights | KQL | Parquet |
 | Redis (standalone or cluster) | One read-only Redis command; `SCAN` as key export | NDJSON (gzip) |
+| KIM | Node or record query language | NDJSON (gzip); offloaded contents referenced in place |
 
 Agents get the full read capability of each source. Writes cannot get through: on the API-based sources, write operations are never offered and are blocked on the wire; on the query-language sources they are filtered at several independent layers. The guarantee holds even when the configured credential could write.
 
@@ -104,6 +105,7 @@ The full reference is in [docs/configuration.md](docs/configuration.md).
 | Oracle | `SET TRANSACTION READ ONLY`, always rolled back; strict lexer (single `SELECT`, no PL/SQL, no DDL, no `FOR UPDATE`, no `NEXTVAL`); system package allowlist; routine inventory against autonomous transactions and dynamic SQL |
 | SQL Server | Transaction that is always rolled back; strict T-SQL lexer (single `SELECT`, no `EXEC`, no DML/DDL, no `SELECT … INTO`, no `NEXT VALUE FOR`, no remote rowsets or locking hints); function inventory against extended procedures, OLE Automation, CLR and linked servers, with strict mode for sysadmin logins and risky server settings; optional `ApplicationIntent=ReadOnly` |
 | Redis | Static allowlist of read-only, non-blocking commands; guard on every command the client writes to the socket; optional replica reads |
+| KIM | Service account key with only the Reader role; allowlist on every HTTP request (query, collection listing, type definitions, byte reads; no drafts, sessions, agents or exports); query check (no `reveal` unless allowed, no foreign origins) |
 
 Each layer is tested on its own against real databases with write-capable credentials (see `test/integration`).
 
@@ -113,7 +115,7 @@ Each layer is tested on its own against real databases with write-capable creden
 pnpm lint          # Biome
 pnpm typecheck     # TypeScript
 pnpm test          # unit tests
-pnpm test:integration   # needs Docker: Postgres, Oracle, SQL Server, Cosmos emulator, Azurite, Redis
+pnpm test:integration   # needs Docker: Postgres, Oracle, SQL Server, Cosmos emulator, Azurite, Redis; KIM runs against a mock
 pnpm build
 ```
 

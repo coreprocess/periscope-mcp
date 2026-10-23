@@ -103,6 +103,7 @@ Read-only does not depend on the credential, but read-only credentials are a fre
 | PostgreSQL | A role with `pg_read_all_data` or per-schema `SELECT`; Entra login for the managed identity |
 | Oracle | A user with `CREATE SESSION` and `READ` grants. Add `SELECT_CATALOG_ROLE` for the precise routine analysis. Without it, user-defined routines are blocked unless allowlisted. |
 | SQL Server | A login with `db_datareader`. Add `VIEW DEFINITION` for the function inventory and `SHOWPLAN` for `explain`. A sysadmin login, `xp_cmdshell`, OLE Automation, CLR, a `TRUSTWORTHY` database or linked servers switch the source to strict mode, where user-defined functions are blocked unless allowlisted. With Azure SQL, prefer an Entra login for the managed identity (`AUTH=azure`) or a readable secondary (`READ_INTENT=true`). |
+| KIM | A service account with an API key and only the built-in *Reader* role on the stage (or narrower assignments). Periscope's HTTP client additionally blocks every request outside its read allowlist. |
 | Redis | An ACL user with `+@read -@write -@dangerous -@scripting`, or a *Data Reader* access policy |
 
 `list_sources` shows each source's credential state (`read-only verified`, `unverified` or `write-capable`).
