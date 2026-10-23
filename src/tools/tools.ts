@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { claimsOf } from '../auth/entra.ts';
 import { PeriscopeError, toPeriscopeError } from '../core/errors.ts';
 import { toJson } from '../core/values.ts';
+import { VERSION } from '../core/version.ts';
 import { readFileWindow } from '../results/file-window.ts';
 import { decodeFileReference } from '../results/files.ts';
 import { type Caller, MAX_WAIT_MS, type ResultSnapshot } from '../results/service.ts';
@@ -93,7 +94,7 @@ const audit = (context: ToolContext, caller: Caller, tool: string, details: Reco
 
 export const createMcpServer = (context: ToolContext): McpServer => {
     const server = new McpServer(
-        { name: 'periscope-mcp', version: '0.1.0' },
+        { name: 'periscope-mcp', version: VERSION },
         {
             instructions:
                 'Read-only access to data sources. Start with list_sources and describe. query starts a query and returns a resultId; ' +

@@ -1,6 +1,6 @@
 {
     "name": "periscope-mcp",
-    "version": "0.1.0",
+    "version": "0.0.0",
     "description": "Read-only MCP server for Postgres, Oracle, Cosmos DB, Blob Storage, Log Analytics and Redis",
     "license": "MIT",
     "private": true,

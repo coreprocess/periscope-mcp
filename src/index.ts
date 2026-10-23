@@ -8,6 +8,7 @@ import { loadConfig } from './config/env.ts';
 import { errorMessage } from './core/errors.ts';
 import { createLoggers } from './core/logger.ts';
 import { Signer } from './core/signing.ts';
+import { VERSION } from './core/version.ts';
 import type { StoreDescriptor } from './results/parquet/protocol.ts';
 import { ResultService } from './results/service.ts';
 import { AzureBlobResultStore } from './results/store/azureblob.ts';
@@ -17,8 +18,6 @@ import { createHttpApp, listen } from './server/http.ts';
 import { SourceRegistry } from './sources/registry.ts';
 import type { ToolContext } from './tools/context.ts';
 import { createMcpServer } from './tools/tools.ts';
-
-const VERSION = '0.1.0';
 
 const USAGE = `periscope-mcp ${VERSION} — read-only MCP server for data sources
 

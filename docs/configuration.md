@@ -36,6 +36,7 @@ All configuration comes from environment variables. For local use, `--env-file <
 | `PERISCOPE_AUDIT_LOG` | `stdout` (http), `stderr` (stdio) | `stdout`, `stderr` or a file path (JSON lines) |
 | `PERISCOPE_LOG_LEVEL` | `info` | Operational log level |
 | `AZURE_CLIENT_ID` | | Client ID of a user-assigned managed identity for `DefaultAzureCredential` |
+| `PERISCOPE_VERSION` | set by the image build | Version reported by `--version` and to MCP clients; the release pipeline sets it from the tag |
 
 ## Sources
 
