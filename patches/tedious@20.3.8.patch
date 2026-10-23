@@ -1,0 +1,81 @@
+diff --git a/lib/value-parser.js b/lib/value-parser.js
+index 9cfae8cae1cea9602f0e4b81b1ece9b22d228776..78308da086c844ee4bedcdebc52df06458c00c2e 100644
+--- a/lib/value-parser.js
++++ b/lib/value-parser.js
+@@ -42,13 +42,23 @@ function readReal(buf, offset) {
+ function readFloat(buf, offset) {
+   return (0, _helpers.readDoubleLE)(buf, offset);
+ }
++// periscope-mcp patch: return exact decimal strings instead of lossy JS numbers.
++function formatScaled(unscaled, scale) {
++  const negative = unscaled < 0n;
++  let digits = (negative ? -unscaled : unscaled).toString();
++  if (scale > 0) {
++    digits = digits.padStart(scale + 1, '0');
++    digits = digits.slice(0, -scale) + '.' + digits.slice(-scale);
++  }
++  return negative ? '-' + digits : digits;
++}
+ function readSmallMoney(buf, offset) {
+   let value;
+   ({
+     offset,
+     value
+   } = (0, _helpers.readInt32LE)(buf, offset));
+-  return new _helpers.Result(value / MONEY_DIVISOR, offset);
++  return new _helpers.Result(formatScaled(BigInt(value), 4), offset);
+ }
+ function readMoney(buf, offset) {
+   let high;
+@@ -61,7 +71,7 @@ function readMoney(buf, offset) {
+     offset,
+     value: low
+   } = (0, _helpers.readUInt32LE)(buf, offset));
+-  return new _helpers.Result((low + 0x100000000 * high) / MONEY_DIVISOR, offset);
++  return new _helpers.Result(formatScaled(BigInt(high) * 0x100000000n + BigInt(low), 4), offset);
+ }
+ function readBit(buf, offset) {
+   let value;
+@@ -458,32 +468,18 @@ function readNumeric(buf, offset, dataLength, _precision, scale) {
+     offset,
+     value: sign
+   } = (0, _helpers.readUInt8)(buf, offset));
+-  sign = sign === 1 ? 1 : -1;
+-  let value;
+-  if (dataLength === 5) {
+-    ({
+-      offset,
+-      value
+-    } = (0, _helpers.readUInt32LE)(buf, offset));
+-  } else if (dataLength === 9) {
+-    ({
+-      offset,
+-      value
+-    } = (0, _helpers.readUNumeric64LE)(buf, offset));
+-  } else if (dataLength === 13) {
+-    ({
+-      offset,
+-      value
+-    } = (0, _helpers.readUNumeric96LE)(buf, offset));
+-  } else if (dataLength === 17) {
+-    ({
+-      offset,
+-      value
+-    } = (0, _helpers.readUNumeric128LE)(buf, offset));
+-  } else {
++  const length = dataLength - 1;
++  if (length !== 4 && length !== 8 && length !== 12 && length !== 16) {
+     throw new Error(`Unsupported numeric dataLength ${dataLength}`);
+   }
+-  return new _helpers.Result(value * sign / Math.pow(10, scale), offset);
++  if (buf.length < offset + length) {
++    throw new _helpers.NotEnoughDataError(offset + length);
++  }
++  let magnitude = 0n;
++  for (let i = length - 1; i >= 0; i--) {
++    magnitude = (magnitude << 8n) | BigInt(buf[offset + i]);
++  }
++  return new _helpers.Result(formatScaled(sign === 1 ? magnitude : -magnitude, scale), offset + length);
+ }
+ function readVariant(buf, offset, options, dataLength) {
+   let baseType;

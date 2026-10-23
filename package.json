@@ -1,7 +1,7 @@
 {
     "name": "periscope-mcp",
     "version": "0.0.0",
-    "description": "Read-only MCP server for Postgres, Oracle, Cosmos DB, Blob Storage, Log Analytics and Redis",
+    "description": "Read-only MCP server for Postgres, Oracle, SQL Server, Cosmos DB, Blob Storage, Log Analytics and Redis",
     "license": "MIT",
     "private": true,
     "type": "module",
@@ -38,6 +38,7 @@
         "hyparquet-writer": "0.17.0",
         "jose": "6.2.13",
         "libpg-query": "18.1.5",
+        "mssql": "12.7.11",
         "oracledb": "26.0.0",
         "pg": "8.23.1",
         "pg-cursor": "2.22.1",
@@ -48,6 +49,7 @@
         "@biomejs/biome": "2.6.2",
         "@modelcontextprotocol/client": "2.3.1",
         "@types/express": "5.0.6",
+        "@types/mssql": "12.3.0",
         "@types/node": "^24.19.2",
         "@types/oracledb": "7.0.3",
         "@types/pg": "8.23.1",
@@ -61,6 +63,9 @@
             "oracledb",
             "protobufjs",
             "ssh2"
-        ]
+        ],
+        "patchedDependencies": {
+            "tedious@20.3.8": "patches/tedious@20.3.8.patch"
+        }
     }
 }

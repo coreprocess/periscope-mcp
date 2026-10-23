@@ -47,13 +47,14 @@ The guarantee is the product. It must hold even when the configured credential c
   never import the result store writers.
 - Every guard fails closed: whatever it does not fully understand, it rejects.
 - A change to a guard — the Postgres syntax-tree guard and inventory, the Oracle lexer and
-  inventory, the Redis allowlist and wire guard, the Cosmos and Blob wire guards, the Log
+  inventory, the SQL Server lexer and inventory, the Redis allowlist and wire guard, the Cosmos and Blob wire guards, the Log
   Analytics endpoint — comes with unit tests in `test/unit/guards.test.ts` and an attack case in
   the source's integration test. Integration tests use write-capable credentials and verify
   that the data is unchanged.
 - Dependencies a guard hooks into (`@redis/client`, `@azure/cosmos`, `@azure/storage-blob`,
-  `pg`, `oracledb`, `libpg-query`) are pinned to exact versions; bump them only together with
-  their integration test.
+  `pg`, `oracledb`, `mssql`, `libpg-query`) are pinned to exact versions; bump them only together with
+  their integration test. `tedious` carries a pnpm patch (`patches/`) that returns decimal and
+  money values as exact strings; a `tedious` bump needs the patch regenerated.
 - Downloads are served by Periscope only, exactly as stored: never hand out storage account
   URLs or SAS tokens, never compress in transit, never serve internal files (`state.json`,
   `cancel.json`).

@@ -4,6 +4,7 @@ FROM node:24.14.1-bookworm-slim AS base
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
+COPY patches ./patches
 
 # Production dependencies only, installed from scratch.
 FROM base AS deps
@@ -18,7 +19,7 @@ RUN pnpm build
 FROM node:24.14.1-bookworm-slim
 ARG PERISCOPE_VERSION=dev
 LABEL org.opencontainers.image.source="https://github.com/coreprocess/periscope-mcp" \
-      org.opencontainers.image.description="Read-only MCP server for Postgres, Oracle, Cosmos DB, Blob Storage, Log Analytics and Redis" \
+      org.opencontainers.image.description="Read-only MCP server for Postgres, Oracle, SQL Server, Cosmos DB, Blob Storage, Log Analytics and Redis" \
       org.opencontainers.image.licenses="MIT"
 ENV NODE_ENV=production \
     PERISCOPE_VERSION=${PERISCOPE_VERSION} \

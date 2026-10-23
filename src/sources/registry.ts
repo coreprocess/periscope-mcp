@@ -5,6 +5,7 @@ import type { SourceAdapter } from './adapter.ts';
 import { BlobAdapter } from './blob/adapter.ts';
 import { CosmosAdapter } from './cosmos/adapter.ts';
 import { LogAnalyticsAdapter } from './loganalytics/adapter.ts';
+import { MssqlAdapter } from './mssql/adapter.ts';
 import { OracleAdapter } from './oracle/adapter.ts';
 import { PostgresAdapter } from './postgres/adapter.ts';
 import { RedisAdapter } from './redis/adapter.ts';
@@ -15,6 +16,8 @@ export const createAdapter = (config: SourceConfig): SourceAdapter => {
             return new PostgresAdapter(config);
         case 'oracle':
             return new OracleAdapter(config);
+        case 'mssql':
+            return new MssqlAdapter(config);
         case 'cosmos':
             return new CosmosAdapter(config);
         case 'blob':

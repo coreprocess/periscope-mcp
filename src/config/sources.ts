@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { parseIsoDuration } from '../core/duration.ts';
 
-export const SOURCE_TYPES = ['postgres', 'oracle', 'cosmos', 'blob', 'loganalytics', 'redis'] as const;
+export const SOURCE_TYPES = ['postgres', 'oracle', 'mssql', 'cosmos', 'blob', 'loganalytics', 'redis'] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
 
 const bool = z
@@ -64,6 +64,22 @@ const schemas = {
         PASSWORD: z.string(),
         ALLOW_ROUTINES: list.optional(),
         ALLOW_DBLINKS: bool.optional(),
+    }),
+    mssql: z.object({
+        ...common,
+        TYPE: z.literal('mssql'),
+        CONNECTION_STRING: z.string().optional(),
+        HOST: z.string().optional(),
+        PORT: port.optional(),
+        DATABASE: z.string().optional(),
+        USER: z.string().optional(),
+        PASSWORD: z.string().optional(),
+        AUTH: auth.optional(),
+        ENCRYPT: bool.optional(),
+        TRUST_SERVER_CERTIFICATE: bool.optional(),
+        READ_INTENT: bool.optional(),
+        ALLOW_ROUTINES: list.optional(),
+        ALLOW_LINKED_SERVERS: bool.optional(),
     }),
     cosmos: z.object({
         ...common,
@@ -151,6 +167,22 @@ export interface OracleSourceConfig extends CommonSourceConfig {
     allowDbLinks: boolean;
 }
 
+export interface MssqlSourceConfig extends CommonSourceConfig {
+    type: 'mssql';
+    connectionString: string | undefined;
+    host: string | undefined;
+    port: number;
+    database: string | undefined;
+    user: string | undefined;
+    password: string | undefined;
+    azureAuth: boolean;
+    encrypt: boolean;
+    trustServerCertificate: boolean;
+    readIntent: boolean;
+    allowRoutines: string[];
+    allowLinkedServers: boolean;
+}
+
 export interface CosmosSourceConfig extends CommonSourceConfig {
     type: 'cosmos';
     endpoint: string;
@@ -196,6 +228,7 @@ export interface RedisSourceConfig extends CommonSourceConfig {
 export type SourceConfig =
     | PostgresSourceConfig
     | OracleSourceConfig
+    | MssqlSourceConfig
     | CosmosSourceConfig
     | BlobSourceConfig
     | LogAnalyticsSourceConfig
@@ -276,6 +309,30 @@ export const buildSourceConfig = (
                 password: r.PASSWORD,
                 allowRoutines: (r.ALLOW_ROUTINES ?? []).map((s) => s.toUpperCase()),
                 allowDbLinks: r.ALLOW_DBLINKS ?? false,
+            };
+        }
+        case 'mssql': {
+            const r = raw as Raw<'mssql'>;
+            if (!r.CONNECTION_STRING && !r.HOST) throw new Error('needs CONNECTION_STRING or HOST');
+            if (!r.CONNECTION_STRING && r.AUTH !== 'azure' && (!r.USER || !r.PASSWORD)) {
+                throw new Error('needs USER and PASSWORD, or AUTH=azure');
+            }
+            const readIntentInString = /applicationintent\s*=\s*readonly/i.test(r.CONNECTION_STRING ?? '');
+            return {
+                ...base,
+                type: 'mssql',
+                connectionString: r.CONNECTION_STRING,
+                host: r.HOST,
+                port: r.PORT ?? 1433,
+                database: r.DATABASE,
+                user: r.USER,
+                password: r.PASSWORD,
+                azureAuth: r.AUTH === 'azure',
+                encrypt: r.ENCRYPT ?? true,
+                trustServerCertificate: r.TRUST_SERVER_CERTIFICATE ?? false,
+                readIntent: r.READ_INTENT ?? readIntentInString,
+                allowRoutines: (r.ALLOW_ROUTINES ?? []).map((s) => s.toUpperCase()),
+                allowLinkedServers: r.ALLOW_LINKED_SERVERS ?? false,
             };
         }
         case 'cosmos': {

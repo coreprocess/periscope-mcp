@@ -63,6 +63,43 @@ describe('source configuration', () => {
         assert.equal(redis?.type === 'redis' && redis.cluster, true);
     });
 
+    it('parses sql server sources and derives the read intent', () => {
+        const [pooled, direct] = parseSources(
+            {
+                PERISCOPE_SOURCE_N: '2',
+                PERISCOPE_SOURCE_0_NAME: 'crm',
+                PERISCOPE_SOURCE_0_TYPE: 'mssql',
+                PERISCOPE_SOURCE_0_CONNECTION_STRING:
+                    'Server=tcp:db,1433;Database=crm;User Id=u;Password=p;ApplicationIntent=ReadOnly',
+                PERISCOPE_SOURCE_0_ALLOW_ROUTINES: 'dbo.f',
+                PERISCOPE_SOURCE_1_NAME: 'billing',
+                PERISCOPE_SOURCE_1_TYPE: 'mssql',
+                PERISCOPE_SOURCE_1_HOST: 'db',
+                PERISCOPE_SOURCE_1_DATABASE: 'billing',
+                PERISCOPE_SOURCE_1_AUTH: 'azure',
+            },
+            defaults
+        );
+        assert.equal(pooled?.type === 'mssql' && pooled.readIntent, true);
+        assert.deepEqual(pooled?.type === 'mssql' && pooled.allowRoutines, ['DBO.F']);
+        assert.equal(direct?.type === 'mssql' && direct.readIntent, false);
+        assert.equal(direct?.type === 'mssql' && direct.port, 1433);
+        assert.equal(direct?.type === 'mssql' && direct.encrypt, true);
+        assert.throws(
+            () =>
+                parseSources(
+                    {
+                        PERISCOPE_SOURCE_N: '1',
+                        PERISCOPE_SOURCE_0_NAME: 'x',
+                        PERISCOPE_SOURCE_0_TYPE: 'mssql',
+                        PERISCOPE_SOURCE_0_HOST: 'db',
+                    },
+                    defaults
+                ),
+            /USER and PASSWORD/
+        );
+    });
+
     it('rejects missing, extra and duplicate entries and unknown keys', () => {
         expectConfigError(() => parseSources({ PERISCOPE_SOURCE_N: '1' }, defaults), /PERISCOPE_SOURCE_0/);
         expectConfigError(
