@@ -100,6 +100,39 @@ describe('source configuration', () => {
         );
     });
 
+    it('parses kim sources and normalizes origins', () => {
+        const [kim] = parseSources(
+            {
+                PERISCOPE_SOURCE_N: '1',
+                PERISCOPE_SOURCE_0_NAME: 'records',
+                PERISCOPE_SOURCE_0_TYPE: 'kim',
+                PERISCOPE_SOURCE_0_URL: 'https://kim.example.com/',
+                PERISCOPE_SOURCE_0_STAGE: 'acme.crm.prod',
+                PERISCOPE_SOURCE_0_API_KEY: `kim_sk_${'0'.repeat(64)}`,
+            },
+            defaults
+        );
+        assert.ok(kim?.type === 'kim');
+        assert.equal(kim.url, 'https://kim.example.com');
+        assert.equal(kim.identityUrl, 'https://kim.example.com');
+        assert.equal(kim.allowReveal, false);
+        assert.throws(
+            () =>
+                parseSources(
+                    {
+                        PERISCOPE_SOURCE_N: '1',
+                        PERISCOPE_SOURCE_0_NAME: 'records',
+                        PERISCOPE_SOURCE_0_TYPE: 'kim',
+                        PERISCOPE_SOURCE_0_URL: 'https://kim.example.com',
+                        PERISCOPE_SOURCE_0_STAGE: 'acme.crm.prod',
+                        PERISCOPE_SOURCE_0_API_KEY: 'not-a-key',
+                    },
+                    defaults
+                ),
+            /API_KEY/
+        );
+    });
+
     it('rejects missing, extra and duplicate entries and unknown keys', () => {
         expectConfigError(() => parseSources({ PERISCOPE_SOURCE_N: '1' }, defaults), /PERISCOPE_SOURCE_0/);
         expectConfigError(

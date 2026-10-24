@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { parseIsoDuration } from '../core/duration.ts';
 
-export const SOURCE_TYPES = ['postgres', 'oracle', 'mssql', 'cosmos', 'blob', 'loganalytics', 'redis'] as const;
+export const SOURCE_TYPES = ['postgres', 'oracle', 'mssql', 'cosmos', 'blob', 'loganalytics', 'redis', 'kim'] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
 
 const bool = z
@@ -125,12 +125,21 @@ const schemas = {
         READ_FROM_REPLICAS: bool.optional(),
         MAX_OPS_PER_SEC: positiveInt.optional(),
     }),
+    kim: z.object({
+        ...common,
+        TYPE: z.literal('kim'),
+        URL: z.string().url(),
+        STAGE: z.string().min(1),
+        API_KEY: z.string().startsWith('kim_sk_'),
+        IDENTITY_URL: z.string().url().optional(),
+        ALLOW_REVEAL: bool.optional(),
+    }),
 } as const;
 
 export const sourceKeySchemas = schemas;
 
 /** Keys that hold secrets. Their values are never logged or echoed. */
-export const SECRET_KEYS = new Set(['PASSWORD', 'KEY', 'SAS', 'CONNECTION_STRING', 'URL', 'CONNECT_STRING']);
+export const SECRET_KEYS = new Set(['PASSWORD', 'KEY', 'API_KEY', 'SAS', 'CONNECTION_STRING', 'URL', 'CONNECT_STRING']);
 
 type Raw<T extends SourceType> = z.infer<(typeof schemas)[T]>;
 
@@ -225,6 +234,17 @@ export interface RedisSourceConfig extends CommonSourceConfig {
     maxOpsPerSec: number | undefined;
 }
 
+export interface KimSourceConfig extends CommonSourceConfig {
+    type: 'kim';
+    /** Origin of the stage's environment, without a trailing slash. */
+    url: string;
+    stage: string;
+    apiKey: string;
+    /** Origin of the instance hosting the management stage, where API keys are exchanged. */
+    identityUrl: string;
+    allowReveal: boolean;
+}
+
 export type SourceConfig =
     | PostgresSourceConfig
     | OracleSourceConfig
@@ -232,7 +252,8 @@ export type SourceConfig =
     | CosmosSourceConfig
     | BlobSourceConfig
     | LogAnalyticsSourceConfig
-    | RedisSourceConfig;
+    | RedisSourceConfig
+    | KimSourceConfig;
 
 export interface SourceDefaults {
     maxQueryDurationMs: number;
@@ -403,6 +424,19 @@ export const buildSourceConfig = (
                 cluster: r.CLUSTER ?? false,
                 readFromReplicas: r.READ_FROM_REPLICAS ?? false,
                 maxOpsPerSec: r.MAX_OPS_PER_SEC,
+            };
+        }
+        case 'kim': {
+            const r = raw as Raw<'kim'>;
+            const origin = (value: string): string => new URL(value).origin;
+            return {
+                ...base,
+                type: 'kim',
+                url: origin(r.URL),
+                stage: r.STAGE,
+                apiKey: r.API_KEY,
+                identityUrl: origin(r.IDENTITY_URL ?? r.URL),
+                allowReveal: r.ALLOW_REVEAL ?? false,
             };
         }
     }

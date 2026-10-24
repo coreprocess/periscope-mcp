@@ -43,7 +43,7 @@ All configuration comes from environment variables. For local use, `--env-file <
 ```bash
 PERISCOPE_SOURCE_N=3                 # number of sources; indices run 0 … N-1
 PERISCOPE_SOURCE_<i>_NAME=…          # identifier used in tool calls: [a-z0-9_-]{1,64}, unique
-PERISCOPE_SOURCE_<i>_TYPE=…          # postgres | oracle | mssql | cosmos | blob | loganalytics | redis
+PERISCOPE_SOURCE_<i>_TYPE=…          # postgres | oracle | mssql | cosmos | blob | loganalytics | redis | kim
 PERISCOPE_SOURCE_<i>_<KEY>=…
 ```
 
@@ -136,6 +136,16 @@ Authentication is always Entra (`DefaultAzureCredential`) with the role *Log Ana
 | `READ_FROM_REPLICAS` | `true`: send reads to replicas |
 | `MAX_OPS_PER_SEC` | Command budget for queries of this source |
 
+### `kim`
+
+| Key | Description |
+|---|---|
+| `URL` | Origin of the stage's KIM environment, e.g. `https://kim.example.com` |
+| `STAGE` | Stage as `org.solution.stage` or stage id |
+| `API_KEY` | API key (`kim_sk_…`) of a service account; assign it only the built-in *Reader* role |
+| `IDENTITY_URL` | Origin of the instance hosting the management stage, where the key is exchanged; default `URL` |
+| `ALLOW_REVEAL` | `true` to allow `reveal` clauses (they disclose masked values and are audited by KIM); default `false` |
+
 ## Query options and parameters
 
 | Type | `params` | `options` |
@@ -147,3 +157,4 @@ Authentication is always Entra (`DefaultAzureCredential`) with the role *Log Ana
 | `blob` | not used | `container`, `tagFilter`, `include` (`metadata`, `tags`, `versions`, `snapshots`) |
 | `loganalytics` | not used | `timespan` (ISO 8601 duration or `start/end` interval) |
 | `redis` | not used | `values` (with `SCAN`: fetch type, TTL and value of every key) |
+| `kim` | not used; literals go into the query (`PreciseNumber(1.25)`, `Instant(…)`) | `snapshotId` (read at this snapshot) |

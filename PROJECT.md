@@ -107,7 +107,7 @@ Coding standards for AI agents live in [`AGENTS.md`](./AGENTS.md); reusable agen
 
 ### Build pipeline
 
-[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) runs on every pull request and every push to `main`: lint, type check, unit tests and build, then the integration tests against real databases and emulators (Postgres, Oracle XE 21, SQL Server 2022, Cosmos DB emulator, Azurite, Redis).
+[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) runs on every pull request and every push to `main`: lint, type check, unit tests and build, then the integration tests against real databases and emulators (Postgres, Oracle XE 21, SQL Server 2022, Cosmos DB emulator, Azurite, Redis, and a mock of the KIM API).
 
 ### Release pipeline
 

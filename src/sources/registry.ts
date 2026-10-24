@@ -4,6 +4,7 @@ import { errorMessage, PeriscopeError } from '../core/errors.ts';
 import type { SourceAdapter } from './adapter.ts';
 import { BlobAdapter } from './blob/adapter.ts';
 import { CosmosAdapter } from './cosmos/adapter.ts';
+import { KimAdapter } from './kim/adapter.ts';
 import { LogAnalyticsAdapter } from './loganalytics/adapter.ts';
 import { MssqlAdapter } from './mssql/adapter.ts';
 import { OracleAdapter } from './oracle/adapter.ts';
@@ -26,6 +27,8 @@ export const createAdapter = (config: SourceConfig): SourceAdapter => {
             return new LogAnalyticsAdapter(config);
         case 'redis':
             return new RedisAdapter(config);
+        case 'kim':
+            return new KimAdapter(config);
     }
 };
 

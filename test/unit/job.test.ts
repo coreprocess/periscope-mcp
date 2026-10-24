@@ -142,13 +142,13 @@ describe('result jobs', () => {
     });
 
     it('limits concurrent queries per user', async () => {
-        // let the counters of jobs cancelled by earlier tests settle
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        // a caller of its own, so jobs of earlier tests that are still winding down do not count
+        const caller = { ...testCaller, oid: 'concurrency-test-user' };
         const adapter = new FakeAdapter(() => ({ format: 'ndjson', batches: documents(1_000_000, 1000)() }));
         const prepared = await adapter.validate('q');
         const started: string[] = [];
-        for (let i = 0; i < 8; i++) started.push(await harness.service.start(adapter, prepared, testCaller));
-        await assert.rejects(harness.service.start(adapter, prepared, testCaller), /Too many concurrent queries/);
+        for (let i = 0; i < 8; i++) started.push(await harness.service.start(adapter, prepared, caller));
+        await assert.rejects(harness.service.start(adapter, prepared, caller), /Too many concurrent queries/);
         for (const id of started) await harness.service.cancel(id);
         for (const id of started) await finish(id);
     });
