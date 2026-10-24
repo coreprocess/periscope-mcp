@@ -12,11 +12,18 @@ import {
 } from './sources.ts';
 
 export interface AuthConfig {
-    mode: 'entra' | 'none';
+    mode: 'entra' | 'entra-broker' | 'none';
     tenantId: string | undefined;
     clientId: string | undefined;
     requiredRole: string;
     scopeName: string;
+    /** entra-broker: how Periscope authenticates to Entra (secret, or a federated token file). */
+    clientSecret: string | undefined;
+    clientAssertionFile: string | undefined;
+    /** entra-broker: redirect URIs MCP clients may register, besides loopback. */
+    redirectUris: string[];
+    accessTokenTtlMs: number;
+    sessionTtlMs: number;
     /** Overrides for non-public clouds and tests. Defaults derive from the tenant. */
     issuer: string | undefined;
     jwksUri: string | undefined;
@@ -141,19 +148,53 @@ export const loadConfig = (env: Env = process.env): Config => {
     const authMode = enumVar(
         env,
         'PERISCOPE_AUTH',
-        ['entra', 'none'] as const,
+        ['entra', 'entra-broker', 'none'] as const,
         transport === 'http' ? 'entra' : 'none'
     );
     if (authMode === 'none' && transport === 'http' && !['127.0.0.1', 'localhost', '::1'].includes(host)) {
         fail('PERISCOPE_AUTH', "'none' is only allowed with stdio or a localhost bind (PERISCOPE_HOST)");
     }
-    if (authMode === 'entra') {
-        if (!env.PERISCOPE_AUTH_TENANT_ID) fail('PERISCOPE_AUTH_TENANT_ID', 'required for entra auth');
-        if (!env.PERISCOPE_AUTH_CLIENT_ID) fail('PERISCOPE_AUTH_CLIENT_ID', 'required for entra auth');
+    const entraAuth = authMode === 'entra' || authMode === 'entra-broker';
+    if (entraAuth) {
+        if (!env.PERISCOPE_AUTH_TENANT_ID) fail('PERISCOPE_AUTH_TENANT_ID', `required for ${authMode} auth`);
+        if (!env.PERISCOPE_AUTH_CLIENT_ID) fail('PERISCOPE_AUTH_CLIENT_ID', `required for ${authMode} auth`);
+    }
+    // Workload identity (AKS) injects AZURE_FEDERATED_TOKEN_FILE; it doubles as the client assertion.
+    const clientAssertionFile = env.PERISCOPE_AUTH_CLIENT_ASSERTION_FILE ?? env.AZURE_FEDERATED_TOKEN_FILE;
+    if (authMode === 'entra-broker') {
+        if (transport !== 'http') fail('PERISCOPE_AUTH', "'entra-broker' needs the http transport");
+        if (!env.PERISCOPE_AUTH_CLIENT_SECRET && !clientAssertionFile) {
+            fail(
+                'PERISCOPE_AUTH_CLIENT_ASSERTION_FILE',
+                'entra-broker needs a client assertion file or PERISCOPE_AUTH_CLIENT_SECRET'
+            );
+        }
+        if (!env.PERISCOPE_DOWNLOAD_SIGNING_KEY) {
+            fail('PERISCOPE_DOWNLOAD_SIGNING_KEY', 'required for entra-broker auth (it also seals OAuth tokens)');
+        }
+        if (
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(env.PERISCOPE_AUTH_TENANT_ID ?? '')
+        ) {
+            fail('PERISCOPE_AUTH_TENANT_ID', 'entra-broker needs the tenant ID (GUID), not a domain');
+        }
+        const path = env.PERISCOPE_PUBLIC_URL ? new URL(env.PERISCOPE_PUBLIC_URL).pathname : '/';
+        if (path !== '/' && path !== '') fail('PERISCOPE_PUBLIC_URL', 'entra-broker needs a URL without a path');
+    }
+    const redirectUris = (
+        env.PERISCOPE_AUTH_REDIRECT_URIS ??
+        'https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback'
+    )
+        .split(',')
+        .map((uri) => uri.trim())
+        .filter(Boolean);
+    for (const uri of authMode === 'entra-broker' ? redirectUris : []) {
+        if (!uri.startsWith('https://') || !urlSchema.safeParse(uri).success) {
+            fail('PERISCOPE_AUTH_REDIRECT_URIS', `'${uri}' is not an https URL`);
+        }
     }
 
     let publicUrl = env.PERISCOPE_PUBLIC_URL;
-    if (transport === 'http' && authMode === 'entra' && !publicUrl) fail('PERISCOPE_PUBLIC_URL', 'required for http');
+    if (transport === 'http' && entraAuth && !publicUrl) fail('PERISCOPE_PUBLIC_URL', 'required for http');
     if (publicUrl !== undefined && !urlSchema.safeParse(publicUrl).success) fail('PERISCOPE_PUBLIC_URL', 'invalid URL');
     publicUrl = (publicUrl ?? `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`).replace(/\/+$/, '');
 
@@ -190,6 +231,11 @@ export const loadConfig = (env: Env = process.env): Config => {
             clientId: env.PERISCOPE_AUTH_CLIENT_ID,
             requiredRole: env.PERISCOPE_AUTH_REQUIRED_ROLE ?? 'Periscope.Reader',
             scopeName: env.PERISCOPE_AUTH_SCOPE ?? 'Periscope.Access',
+            clientSecret: env.PERISCOPE_AUTH_CLIENT_SECRET,
+            clientAssertionFile,
+            redirectUris,
+            accessTokenTtlMs: durationVar(env, 'PERISCOPE_AUTH_ACCESS_TOKEN_TTL', 'PT1H'),
+            sessionTtlMs: durationVar(env, 'PERISCOPE_AUTH_SESSION_TTL', 'P30D'),
             issuer: env.PERISCOPE_AUTH_ISSUER,
             jwksUri: env.PERISCOPE_AUTH_JWKS_URI,
             authorizationServer: env.PERISCOPE_AUTH_AUTHORIZATION_SERVER,

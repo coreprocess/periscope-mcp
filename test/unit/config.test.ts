@@ -232,6 +232,54 @@ describe('global configuration', () => {
         );
     });
 
+    it('configures the entra broker with a federated token file or a secret', () => {
+        const base = {
+            PERISCOPE_TRANSPORT: 'http',
+            PERISCOPE_AUTH: 'entra-broker',
+            PERISCOPE_AUTH_TENANT_ID: '11111111-2222-3333-4444-555555555555',
+            PERISCOPE_AUTH_CLIENT_ID: 'c',
+            PERISCOPE_PUBLIC_URL: 'https://p.example.com',
+            PERISCOPE_RESULTS_ACCOUNT_URL: 'https://a.blob.core.windows.net',
+            PERISCOPE_DOWNLOAD_SIGNING_KEY: 'k'.repeat(32),
+        };
+        expectConfigError(() => loadConfig(base), /PERISCOPE_AUTH_CLIENT_ASSERTION_FILE/);
+        const federated = loadConfig({ ...base, AZURE_FEDERATED_TOKEN_FILE: '/var/run/token' });
+        assert.equal(federated.auth.clientAssertionFile, '/var/run/token');
+        assert.deepEqual(federated.auth.redirectUris, [
+            'https://claude.ai/api/mcp/auth_callback',
+            'https://claude.com/api/mcp/auth_callback',
+        ]);
+        assert.equal(federated.auth.sessionTtlMs, 30 * 86_400_000);
+        assert.equal(loadConfig({ ...base, PERISCOPE_AUTH_CLIENT_SECRET: 's' }).auth.clientSecret, 's');
+        expectConfigError(
+            () => loadConfig({ ...base, PERISCOPE_AUTH_CLIENT_SECRET: 's', PERISCOPE_AUTH_TENANT_ID: 'contoso.com' }),
+            /PERISCOPE_AUTH_TENANT_ID/
+        );
+        expectConfigError(
+            () =>
+                loadConfig({
+                    ...base,
+                    PERISCOPE_AUTH_CLIENT_SECRET: 's',
+                    PERISCOPE_PUBLIC_URL: 'https://p.example.com/periscope',
+                }),
+            /PERISCOPE_PUBLIC_URL/
+        );
+        const { PERISCOPE_DOWNLOAD_SIGNING_KEY: _key, ...withoutKey } = base;
+        expectConfigError(
+            () => loadConfig({ ...withoutKey, PERISCOPE_AUTH_CLIENT_SECRET: 's' }),
+            /PERISCOPE_DOWNLOAD_SIGNING_KEY/
+        );
+        expectConfigError(
+            () =>
+                loadConfig({
+                    ...base,
+                    PERISCOPE_AUTH_CLIENT_SECRET: 's',
+                    PERISCOPE_AUTH_REDIRECT_URIS: 'http://x.example.com/cb',
+                }),
+            /PERISCOPE_AUTH_REDIRECT_URIS/
+        );
+    });
+
     it('only allows disabled auth on localhost', () => {
         expectConfigError(() => loadConfig({ PERISCOPE_TRANSPORT: 'http', PERISCOPE_AUTH: 'none' }), /localhost/);
         const config = loadConfig({

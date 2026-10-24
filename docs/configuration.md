@@ -10,14 +10,19 @@ All configuration comes from environment variables. For local use, `--env-file <
 | `PERISCOPE_HOST` | `0.0.0.0` (http), `127.0.0.1` (stdio) | Bind address of the HTTP listener |
 | `PERISCOPE_PORT` | `8080` (http), random (stdio) | HTTP port. In stdio mode the listener only serves downloads. |
 | `PERISCOPE_PUBLIC_URL` | derived from host and port | Public base URL, e.g. `https://periscope.example.com`. The MCP endpoint is `<base>/mcp`, downloads are `<base>/r/…`. Required for http with Entra auth. |
-| `PERISCOPE_AUTH` | `entra` (http), `none` (stdio) | `none` is only allowed with stdio or a localhost bind |
-| `PERISCOPE_AUTH_TENANT_ID` | | Entra tenant ID (required for `entra`) |
-| `PERISCOPE_AUTH_CLIENT_ID` | | Client ID of the Periscope app registration; the expected token audience (required for `entra`) |
+| `PERISCOPE_AUTH` | `entra` (http), `none` (stdio) | `entra`: Entra issues the tokens (needs the host on a verified domain). `entra-broker`: Periscope is the authorization server and signs users in at Entra (any host). `none` is only allowed with stdio or a localhost bind |
+| `PERISCOPE_AUTH_TENANT_ID` | | Entra tenant ID (required for `entra` and `entra-broker`) |
+| `PERISCOPE_AUTH_CLIENT_ID` | | Client ID of the Periscope app registration: the expected token audience (`entra`) or the client Periscope signs in as (`entra-broker`) |
+| `PERISCOPE_AUTH_CLIENT_ASSERTION_FILE` | `AZURE_FEDERATED_TOKEN_FILE` | `entra-broker`: file with the federated token Periscope presents to Entra (AKS workload identity provides it) |
+| `PERISCOPE_AUTH_CLIENT_SECRET` | | `entra-broker`: client secret instead of a federated token |
+| `PERISCOPE_AUTH_REDIRECT_URIS` | `https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback` | `entra-broker`: HTTPS redirect URIs MCP clients may register; loopback (`http://localhost`, `127.0.0.1`, `[::1]`, any port) is always allowed |
+| `PERISCOPE_AUTH_ACCESS_TOKEN_TTL` | `PT1H` | `entra-broker`: access token lifetime; roles are re-read from Entra at every refresh |
+| `PERISCOPE_AUTH_SESSION_TTL` | `P30D` | `entra-broker`: refresh token lifetime, after which users sign in again |
 | `PERISCOPE_AUTH_REQUIRED_ROLE` | `Periscope.Reader` | App role required for any access |
-| `PERISCOPE_AUTH_SCOPE` | `Periscope.Access` | Name of the delegated scope; clients request `<public url>/mcp/<scope>` |
-| `PERISCOPE_AUTH_ISSUER` | `https://login.microsoftonline.com/<tenant>/v2.0` | Token issuer (override for sovereign clouds or tests) |
+| `PERISCOPE_AUTH_SCOPE` | `Periscope.Access` | `entra`: name of the delegated scope; clients request `<public url>/mcp/<scope>` |
+| `PERISCOPE_AUTH_ISSUER` | `https://login.microsoftonline.com/<tenant>/v2.0` | Entra issuer; `entra-broker` reads its endpoints from the issuer's discovery document (override for sovereign clouds or tests) |
 | `PERISCOPE_AUTH_JWKS_URI` | `https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys` | Signing keys (override for sovereign clouds or tests) |
-| `PERISCOPE_AUTH_AUTHORIZATION_SERVER` | the issuer | Authorization server announced in the protected resource metadata |
+| `PERISCOPE_AUTH_AUTHORIZATION_SERVER` | the issuer | `entra`: authorization server announced in the protected resource metadata |
 | `PERISCOPE_RESULTS_STORE` | `azureblob` (http), `filesystem` (stdio) | Where results are written |
 | `PERISCOPE_RESULTS_ACCOUNT_URL` | | Result store account for `azureblob`, accessed with the managed identity |
 | `PERISCOPE_RESULTS_CONNECTION_STRING` | | Alternative to the account URL (e.g. Azurite) |
@@ -26,7 +31,7 @@ All configuration comes from environment variables. For local use, `--env-file <
 | `PERISCOPE_RESULTS_RETENTION` | `PT24H` | How long results are kept (ISO 8601 duration) |
 | `PERISCOPE_RESULTS_PART_BYTES` | `104857600` | Target stored size of one result part; the first part closes early |
 | `PERISCOPE_DOWNLOAD_URL_TTL` | `PT1H` | Lifetime of signed download URLs |
-| `PERISCOPE_DOWNLOAD_SIGNING_KEY` | random per process | HMAC key (≥ 32 bytes) for download URLs and blob references. Required when replicas share an Azure result store. Rotating it revokes all URLs. |
+| `PERISCOPE_DOWNLOAD_SIGNING_KEY` | random per process | HMAC key (≥ 32 bytes) for download URLs and blob references, and for the OAuth tokens of `entra-broker`. Required when replicas share an Azure result store and for `entra-broker`. Rotating it revokes all URLs and signs everybody out. |
 | `PERISCOPE_READ_MAX_ROWS` | `500` | Maximum rows per `read_result` window |
 | `PERISCOPE_READ_MAX_BYTES` | `65536` | Maximum response size per window |
 | `PERISCOPE_READ_MAX_VALUE_CHARS` | `2000` | Longer values are truncated in windows (never in downloads) |
