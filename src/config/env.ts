@@ -20,6 +20,8 @@ export interface AuthConfig {
     /** entra-broker: how Periscope authenticates to Entra (secret, or a federated token file). */
     clientSecret: string | undefined;
     clientAssertionFile: string | undefined;
+    /** entra-broker: client ID of a user-assigned managed identity whose token is the client assertion. */
+    assertionIdentity: string | undefined;
     /** entra-broker: redirect URIs MCP clients may register, besides loopback. */
     redirectUris: string[];
     accessTokenTtlMs: number;
@@ -163,10 +165,10 @@ export const loadConfig = (env: Env = process.env): Config => {
     const clientAssertionFile = env.PERISCOPE_AUTH_CLIENT_ASSERTION_FILE ?? env.AZURE_FEDERATED_TOKEN_FILE;
     if (authMode === 'entra-broker') {
         if (transport !== 'http') fail('PERISCOPE_AUTH', "'entra-broker' needs the http transport");
-        if (!env.PERISCOPE_AUTH_CLIENT_SECRET && !clientAssertionFile) {
+        if (!env.PERISCOPE_AUTH_CLIENT_SECRET && !env.PERISCOPE_AUTH_ASSERTION_IDENTITY && !clientAssertionFile) {
             fail(
                 'PERISCOPE_AUTH_CLIENT_ASSERTION_FILE',
-                'entra-broker needs a client assertion file or PERISCOPE_AUTH_CLIENT_SECRET'
+                'entra-broker needs a client assertion file, PERISCOPE_AUTH_ASSERTION_IDENTITY or PERISCOPE_AUTH_CLIENT_SECRET'
             );
         }
         if (!env.PERISCOPE_DOWNLOAD_SIGNING_KEY) {
@@ -233,6 +235,7 @@ export const loadConfig = (env: Env = process.env): Config => {
             scopeName: env.PERISCOPE_AUTH_SCOPE ?? 'Periscope.Access',
             clientSecret: env.PERISCOPE_AUTH_CLIENT_SECRET,
             clientAssertionFile,
+            assertionIdentity: env.PERISCOPE_AUTH_ASSERTION_IDENTITY,
             redirectUris,
             accessTokenTtlMs: durationVar(env, 'PERISCOPE_AUTH_ACCESS_TOKEN_TTL', 'PT1H'),
             sessionTtlMs: durationVar(env, 'PERISCOPE_AUTH_SESSION_TTL', 'P30D'),

@@ -82,7 +82,10 @@ One app registration per deployment:
 
 1. **Add a web redirect URI** `https://periscope.example.com/oauth/callback`. No Application ID URI and no exposed scope are needed.
 2. **Add the app role** `Periscope.Reader`, the only one; it grants access to every source. Set *assignment required* on the enterprise application and assign groups. The roles must reach the ID token, which they do for app roles assigned to users and groups.
-3. **Add a credential.** Preferred is a **federated identity credential** for Periscope's Kubernetes service account: issuer = the cluster's OIDC issuer URL, subject `system:serviceaccount:<namespace>:<service account>`, audience `api://AzureADTokenExchange`. Periscope then presents the token that AKS workload identity mounts (`AZURE_FEDERATED_TOKEN_FILE`) and needs no secret. Alternatively set `PERISCOPE_AUTH_CLIENT_SECRET`.
+3. **Add a credential**, preferably a **federated identity credential**, so no secret is needed (audience `api://AzureADTokenExchange` in both cases):
+   - **AKS:** for Periscope's Kubernetes service account: issuer = the cluster's OIDC issuer URL, subject `system:serviceaccount:<namespace>:<service account>`. Periscope presents the token that workload identity mounts (`AZURE_FEDERATED_TOKEN_FILE`).
+   - **Container Apps, App Service:** for Periscope's user-assigned managed identity: issuer `https://login.microsoftonline.com/<tenant>/v2.0`, subject = the identity's object (principal) ID. Set `PERISCOPE_AUTH_ASSERTION_IDENTITY` to the identity's client ID.
+   - Alternatively set `PERISCOPE_AUTH_CLIENT_SECRET`.
 4. **Grant admin consent** for `openid profile offline_access` (Microsoft Graph), so users aren't prompted.
 
 Set `PERISCOPE_AUTH=entra-broker`, `PERISCOPE_AUTH_TENANT_ID`, `PERISCOPE_AUTH_CLIENT_ID`, `PERISCOPE_PUBLIC_URL` and `PERISCOPE_DOWNLOAD_SIGNING_KEY` (it also seals the OAuth tokens).

@@ -268,6 +268,10 @@ describe('global configuration', () => {
         ]);
         assert.equal(federated.auth.sessionTtlMs, 30 * 86_400_000);
         assert.equal(loadConfig({ ...base, PERISCOPE_AUTH_CLIENT_SECRET: 's' }).auth.clientSecret, 's');
+        assert.equal(
+            loadConfig({ ...base, PERISCOPE_AUTH_ASSERTION_IDENTITY: 'mi-client-id' }).auth.assertionIdentity,
+            'mi-client-id'
+        );
         expectConfigError(
             () => loadConfig({ ...base, PERISCOPE_AUTH_CLIENT_SECRET: 's', PERISCOPE_AUTH_TENANT_ID: 'contoso.com' }),
             /PERISCOPE_AUTH_TENANT_ID/

@@ -115,6 +115,7 @@ describe('entra broker (OAuth authorization server in front of Entra)', () => {
     let app: Server;
     let base: string;
     let dir: string;
+    let authConfig: AuthConfig;
 
     before(async () => {
         entra = await startEntra();
@@ -130,6 +131,7 @@ describe('entra broker (OAuth authorization server in front of Entra)', () => {
             scopeName: 'Periscope.Access',
             clientSecret: undefined,
             clientAssertionFile: join(dir, 'token'),
+            assertionIdentity: undefined,
             redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
             accessTokenTtlMs: 3_600_000,
             sessionTtlMs: 30 * 86_400_000,
@@ -137,6 +139,7 @@ describe('entra broker (OAuth authorization server in front of Entra)', () => {
             jwksUri: undefined,
             authorizationServer: undefined,
         };
+        authConfig = auth;
         const broker = new EntraBroker(auth, base, randomBytes(32), nullLoggers());
         const server = express();
         server.use(broker.router());
@@ -530,6 +533,64 @@ describe('entra broker (OAuth authorization server in front of Entra)', () => {
             code_verifier: 'x',
         });
         assert.equal(((await tooShort.json()) as { error: string }).error, 'invalid_grant');
+    });
+
+    it('presents a managed identity token as client assertion (Container Apps, App Service)', async () => {
+        // the managed identity endpoint of Container Apps / App Service, as @azure/identity calls it
+        const identityRequests: URL[] = [];
+        const identity = createServer((req, res) => {
+            const url = new URL(req.url as string, 'http://localhost');
+            identityRequests.push(url);
+            if (req.headers['x-identity-header'] !== 'identity-secret') {
+                res.writeHead(401).end();
+                return;
+            }
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(
+                JSON.stringify({
+                    access_token: ASSERTION,
+                    expires_on: String(Math.floor(Date.now() / 1000) + 3600),
+                    resource: url.searchParams.get('resource'),
+                    token_type: 'Bearer',
+                })
+            );
+        });
+        const identityBase = await listen(identity);
+        const previous = { endpoint: process.env.IDENTITY_ENDPOINT, header: process.env.IDENTITY_HEADER };
+        process.env.IDENTITY_ENDPOINT = `${identityBase}/msi/token`;
+        process.env.IDENTITY_HEADER = 'identity-secret';
+        const miApp = createServer();
+        const fileBase = base;
+        base = await listen(miApp);
+        try {
+            const broker = new EntraBroker(
+                { ...authConfig, clientAssertionFile: undefined, assertionIdentity: 'mi-client-id' },
+                base,
+                randomBytes(32),
+                nullLoggers()
+            );
+            const server = express();
+            server.use(broker.router());
+            miApp.on('request', server);
+            const { client_id } = (await (await register({ redirect_uris: [LOOPBACK] })).json()) as {
+                client_id: string;
+            };
+            const verifier = b64(randomBytes(32));
+            const { back } = await authorize(client_id, verifier);
+            const code = new URL(back?.headers.get('location') as string).searchParams.get('code');
+            assert.ok(code, back?.headers.get('location') ?? 'no redirect');
+            assert.equal(entra.state.tokenRequests.at(-1)?.get('client_assertion'), ASSERTION);
+            assert.equal(identityRequests[0]?.searchParams.get('client_id'), 'mi-client-id');
+            assert.equal(identityRequests[0]?.searchParams.get('resource'), 'api://AzureADTokenExchange');
+        } finally {
+            base = fileBase;
+            process.env.IDENTITY_ENDPOINT = previous.endpoint;
+            process.env.IDENTITY_HEADER = previous.header;
+            if (previous.endpoint === undefined) delete process.env.IDENTITY_ENDPOINT;
+            if (previous.header === undefined) delete process.env.IDENTITY_HEADER;
+            await new Promise((resolve) => miApp.close(resolve));
+            await new Promise((resolve) => identity.close(resolve));
+        }
     });
 
     it('requires the client secret from confidential clients', async () => {
