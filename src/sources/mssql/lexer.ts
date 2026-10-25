@@ -1,4 +1,5 @@
 import { QueryRejectedError } from '../../core/errors.ts';
+import { lineCommentEnd } from '../common.ts';
 
 /**
  * Strict T-SQL lexer and statement filter. T-SQL runs several statements in one batch
@@ -16,8 +17,8 @@ export interface Token {
 }
 
 const WHITESPACE = /[ \t\r\n\f\v]/;
-const WORD_START = /[A-Za-z_#À-￿]/;
-const WORD_PART = /[A-Za-z0-9_#$@À-￿]/;
+const WORD_START = /[A-Za-z_#\p{L}]/u;
+const WORD_PART = /[A-Za-z0-9_#$@\p{L}\p{M}\p{Nd}]/u;
 const PUNCTUATION = new Set([
     '(',
     ')',
@@ -53,8 +54,7 @@ export const lex = (sql: string): Token[] => {
             continue;
         }
         if (ch === '-' && next === '-') {
-            const end = sql.indexOf('\n', i);
-            i = end === -1 ? n : end + 1;
+            i = lineCommentEnd(sql, i);
             continue;
         }
         if (ch === '/' && next === '*') {

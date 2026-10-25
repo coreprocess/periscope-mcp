@@ -228,7 +228,13 @@ export const createMcpServer = (context: ToolContext): McpServer => {
             try {
                 await sourceOfResult(context, resultId);
                 const snapshot = await context.service.snapshot(resultId, (wait ?? 0) * 1000);
-                return json(describeResult(context, caller, snapshot));
+                const described = describeResult(context, caller, snapshot);
+                audit(context, caller, 'get_result', {
+                    resultId,
+                    status: described.status,
+                    urlIssued: 'manifestUrl' in described.download,
+                });
+                return json(described);
             } catch (error) {
                 return failure(context, error);
             }
@@ -259,6 +265,11 @@ export const createMcpServer = (context: ToolContext): McpServer => {
                 const { manifest } = await sourceOfResult(context, resultId);
                 if (!file) {
                     const window = await context.service.readRows(resultId, offset ?? 0, limit ?? 100, columns);
+                    audit(context, caller, 'read_result', {
+                        resultId,
+                        offset: window.offset,
+                        rows: window.rows.length,
+                    });
                     return json(window);
                 }
                 const adapter = await context.registry.get(manifest.source);

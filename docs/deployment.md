@@ -137,5 +137,6 @@ Read-only does not depend on the credential, but read-only credentials are a fre
 
 - **Audit log.** JSON lines on stdout (`stream: "audit"`), with one event per tool call, query start and end, and download. Result data is never logged.
 - **Retention.** Results expire after `PERISCOPE_RESULTS_RETENTION` (default 24 hours). The storage lifecycle rule deletes them, and their status becomes `expired`.
+- **Access logs.** Download URLs carry a bearer token in the path (`/r/<token>/…`). Do not let an ingress, gateway or proxy log those paths, e.g. `nginx.ingress.kubernetes.io/enable-access-log: "false"` on ingress-nginx; Periscope audits every download itself.
 - **Health.** `GET /healthz`.
 - **Limits.** Per source, `MAX_QUERY_DURATION` and `MAX_RESULT_BYTES`; for Cosmos `MAX_RU_PER_SEC`; for Redis `MAX_OPS_PER_SEC`; per user, `PERISCOPE_MAX_CONCURRENT_QUERIES`.

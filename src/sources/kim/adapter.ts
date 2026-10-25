@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { KimSourceConfig } from '../../config/sources.ts';
 import { PeriscopeError } from '../../core/errors.ts';
+import { compileFilter } from '../../core/glob.ts';
 import type {
     DocumentStream,
     ExecutionContext,
@@ -15,7 +16,7 @@ import type {
     SourceAdapter,
     SourceInfo,
 } from '../adapter.ts';
-import { filterRegex, parseOptions, remaining } from '../common.ts';
+import { parseOptions, remaining } from '../common.ts';
 import { KimClient } from './client.ts';
 import { memberDocuments, type NodeEnvelope } from './documents.ts';
 import { analyzeKimQuery } from './guard.ts';
@@ -113,7 +114,11 @@ export class KimAdapter implements SourceAdapter {
         if (!empty && !(typeof params === 'object' && Object.keys(params as object).length === 0)) {
             throw new PeriscopeError('invalid_argument', 'KIM queries take no params; write literals into the query');
         }
-        const analysis = analyzeKimQuery(query, { origin: this.config.url, allowReveal: this.config.allowReveal });
+        const analysis = analyzeKimQuery(query, {
+            origin: this.config.url,
+            stage: this.config.stage,
+            allowReveal: this.config.allowReveal,
+        });
         return { query, params: undefined, options: opts, plan: planKimQuery(analysis) };
     }
 
@@ -257,10 +262,10 @@ export class KimAdapter implements SourceAdapter {
     }
 
     async describe(path: string | undefined, filter: string | undefined): Promise<unknown> {
-        const matches = filterRegex(filter);
+        const matches = compileFilter(filter);
         const [collectionSpec, typeSpec] = (path ?? '').split('/').filter(Boolean);
         if (!collectionSpec) {
-            const collections = (await this.#collections(null)).filter((c) => matches.test(c.name ?? c.id));
+            const collections = (await this.#collections(null)).filter((c) => matches(c.name ?? c.id));
             return { level: 'collections', stage: this.config.stage, collections };
         }
         const collection = await this.#resolveCollection(collectionSpec);
@@ -282,8 +287,8 @@ export class KimAdapter implements SourceAdapter {
             return {
                 level: 'collection',
                 collection: { ...collection, url: collectionUrl },
-                collections: (await this.#collections(collection.id)).filter((c) => matches.test(c.name ?? c.id)),
-                types: types.filter((t) => matches.test(t.type ?? '')),
+                collections: (await this.#collections(collection.id)).filter((c) => matches(c.name ?? c.id)),
+                types: types.filter((t) => matches(t.type ?? '')),
             };
         }
         const type = types.find((t) => t.type === typeSpec || t.typeUrl?.includes(`/${typeSpec}@`));
@@ -292,7 +297,7 @@ export class KimAdapter implements SourceAdapter {
         const definition = await this.#client.typeDefinition<TypeDefinition>(type.typeUrl);
         const properties = await Promise.all(
             (definition.content?.value?.args?.properties ?? [])
-                .filter((p) => matches.test(p.id))
+                .filter((p) => matches(p.id))
                 .map(async (p) => ({
                     id: p.id,
                     title: p.title ?? null,

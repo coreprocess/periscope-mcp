@@ -46,7 +46,7 @@ const schemas = {
         USER: z.string().optional(),
         PASSWORD: z.string().optional(),
         AUTH: auth.optional(),
-        SSL: z.enum(['disable', 'require', 'verify-full']).optional(),
+        SSL: z.enum(['disable', 'no-verify', 'require', 'verify-full']).optional(),
         SEARCH_PATH: z.string().optional(),
         ALLOW_ROUTINES: list.optional(),
     }),
@@ -158,7 +158,7 @@ export interface PostgresSourceConfig extends CommonSourceConfig {
     user: string | undefined;
     password: string | undefined;
     azureAuth: boolean;
-    ssl: 'disable' | 'require' | 'verify-full' | undefined;
+    ssl: 'disable' | 'no-verify' | 'require' | 'verify-full' | undefined;
     searchPath: string | undefined;
     allowRoutines: string[];
 }

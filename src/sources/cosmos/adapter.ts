@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { CosmosSourceConfig } from '../../config/sources.ts';
 import { PeriscopeError, summaryOf } from '../../core/errors.ts';
+import { compileFilter } from '../../core/glob.ts';
 import { SchemaInferrer } from '../../results/infer.ts';
 import type {
     DocumentStream,
@@ -13,7 +14,7 @@ import type {
     SourceAdapter,
     SourceInfo,
 } from '../adapter.ts';
-import { filterRegex, parseOptions, splitPath } from '../common.ts';
+import { parseOptions, splitPath } from '../common.ts';
 import { guardedCosmosHttpClient } from './guard.ts';
 
 const PAGE_SIZE = 1000;
@@ -182,13 +183,13 @@ export class CosmosAdapter implements SourceAdapter {
     async describe(path: string | undefined, filter: string | undefined): Promise<unknown> {
         const client = this.#clientOrThrow;
         const parts = splitPath(path);
-        const matches = filterRegex(filter);
+        const matches = compileFilter(filter);
         if (parts.length === 0) {
             const { resources } = await client.databases.readAll().fetchAll();
             return {
                 level: 'databases',
                 defaultDatabase: this.config.database ?? null,
-                databases: resources.filter((d) => matches.test(d.id)).map((d) => ({ id: d.id })),
+                databases: resources.filter((d) => matches(d.id)).map((d) => ({ id: d.id })),
             };
         }
         const database = client.database(parts[0] as string);
@@ -198,7 +199,7 @@ export class CosmosAdapter implements SourceAdapter {
                 level: 'containers',
                 database: parts[0],
                 containers: resources
-                    .filter((c) => matches.test(c.id))
+                    .filter((c) => matches(c.id))
                     .map((c) => ({
                         id: c.id,
                         partitionKey: c.partitionKey?.paths ?? [],
@@ -214,7 +215,7 @@ export class CosmosAdapter implements SourceAdapter {
             .fetchNext();
         const inferrer = new SchemaInferrer();
         for (const document of sample.resources) inferrer.observe(document);
-        const schema = inferrer.columns().filter((c) => matches.test(c.name) && !c.name.startsWith('_'));
+        const schema = inferrer.columns().filter((c) => matches(c.name) && !c.name.startsWith('_'));
         const raw = resource as unknown as Record<string, unknown>;
         return {
             level: 'container',

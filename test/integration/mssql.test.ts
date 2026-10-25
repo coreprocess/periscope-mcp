@@ -58,6 +58,8 @@ const ATTACKS = [
     'MERGE orders AS t USING (SELECT 1 AS id) s ON t.id = s.id WHEN MATCHED THEN DELETE;',
     'SELECT * INTO orders_copy FROM orders',
     'SELECT 1 DELETE FROM orders',
+    'SELECT 1 AS a --c\rDELETE FROM orders',
+    'SELECT 1 AS a --c\u2028DELETE FROM orders',
     'SELECT 1; DROP TABLE orders',
     'SELECT 1 SELECT 2',
     "EXEC sp_executesql N'DELETE FROM orders'",

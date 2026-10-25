@@ -55,12 +55,13 @@ export class PostgresAdapter implements SourceAdapter {
         await ensureParser();
         const c = this.config;
         const credential = c.azureAuth ? new DefaultAzureCredential() : undefined;
+        // `require` verifies the certificate like `verify-full`; skipping the check takes an explicit `no-verify`
         const ssl =
             c.ssl === 'disable'
                 ? false
-                : c.ssl === 'require'
+                : c.ssl === 'no-verify'
                   ? { rejectUnauthorized: false }
-                  : c.ssl === 'verify-full'
+                  : c.ssl
                     ? { rejectUnauthorized: true }
                     : undefined;
         this.#pool = new pg.Pool({

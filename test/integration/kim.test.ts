@@ -442,6 +442,10 @@ describe('kim source (mock API)', () => {
         for (const query of [
             `from ${orders()} first 5 pick $* reveal $.email`,
             'from https://other.example.com/x/orders first 5',
+            `from ${orders().toUpperCase()} first 5`,
+            `from ${mock.origin}/other.stage/orders first 5`,
+            `from ${mock.origin}/${STAGE}/../other.stage/orders first 5`,
+            `from ${orders()} where $.customer == Reference( https://other.example.com/x/c/1) first 5`,
             `from ${orders()} where $.customer == Reference(https://other.example.com/x/c/1) first 5`,
             'select n = 1',
         ]) {

@@ -6,8 +6,18 @@ import { QueryRejectedError } from '../../core/errors.ts';
  * (libpg-query, WASM) and accepts exactly one SELECT, or EXPLAIN of one.
  */
 
-/** Functions with side effects that a READ ONLY transaction does not prevent. */
+/**
+ * Functions with side effects that a READ ONLY transaction does not prevent, and functions that run a query given
+ * as text or read a relation given by name: the guard never sees that query or relation.
+ */
 const DENIED_FUNCTIONS = [
+    /^query_to_xml/,
+    /^cursor_to_xml/,
+    /^table_to_xml/,
+    /^schema_to_xml/,
+    /^database_to_xml/,
+    /^ts_stat$/,
+    /^ts_rewrite$/,
     /^dblink/,
     /^oracle_execute$/,
     /^pg_background/,
@@ -20,10 +30,19 @@ const DENIED_FUNCTIONS = [
     /^pg_rotate_logfile/,
     /^pg_logical_emit_message$/,
     /^pg_stat_reset/,
+    /^pg_stat_statements_reset$/,
     /^pg_switch_wal$/,
     /^pg_create_.*_replication_slot$/,
     /^pg_drop_replication_slot$/,
     /^pg_replication_slot_advance$/,
+    /^pg_copy_.*_replication_slot$/,
+    /^pg_sync_replication_slots$/,
+    /^pg_logical_slot_/,
+    /^pg_replication_origin_/,
+    /^pg_create_restore_point$/,
+    /^pg_log_standby_snapshot$/,
+    /^pg_backup_/,
+    /^pg_wal_replay_/,
     /^pg_promote$/,
     /^pg_log_backend_memory_contexts$/,
     /^pg_read_file$/,
@@ -107,7 +126,9 @@ const walk = (value: unknown, found: { functions: string[]; relations: string[] 
             const name = nameOf((child as Node).funcname);
             const schema = name.includes('.') ? name.split('.')[0] : undefined;
             if (isDeniedFunction(name) || (schema && DENIED_SCHEMAS.has(schema))) {
-                throw new QueryRejectedError(`Function '${name}' has side effects and is not allowed`);
+                throw new QueryRejectedError(
+                    `Function '${name}' is not allowed (side effects, or a query or relation the guard cannot check)`
+                );
             }
             found.functions.push(name);
         }

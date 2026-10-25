@@ -1,6 +1,6 @@
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { requireBearerAuth } from '@modelcontextprotocol/express';
+import { hostHeaderValidation, originValidation, requireBearerAuth } from '@modelcontextprotocol/express';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import express, { type NextFunction, type Request, type Response } from 'express';
@@ -29,6 +29,12 @@ export const createHttpApp = (config: Config, context: ToolContext, downloads: D
     app.disable('x-powered-by');
     app.set('etag', false);
     app.set('trust proxy', true);
+
+    if (config.auth.mode === 'none') {
+        // No authorization (localhost only): reject requests a web page sends through DNS rebinding or cross-site.
+        const local = ['localhost', '127.0.0.1', '[::1]', new URL(config.publicUrl).hostname];
+        app.use(hostHeaderValidation(local), originValidation(local));
+    }
 
     app.get('/healthz', (_req, res) => {
         res.json({ status: 'ok' });

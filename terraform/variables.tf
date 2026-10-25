@@ -90,7 +90,7 @@ variable "settings" {
 }
 
 variable "key_vault_id" {
-  description = "Key Vault for the download signing key and source secrets. The Periscope identity gets Key Vault Secrets User on it."
+  description = "Key Vault for the download signing key and source secrets. The Periscope identity gets Key Vault Secrets User on each of these secrets, not on the vault."
   type        = string
 }
 

@@ -4,7 +4,7 @@ import { describe, it, mock } from 'node:test';
 import type { SourceConfig } from '../../src/config/sources.ts';
 import { parseIsoDuration } from '../../src/core/duration.ts';
 import { summaryOf, toPeriscopeError } from '../../src/core/errors.ts';
-import { compileGlob } from '../../src/core/glob.ts';
+import { compileFilter, compileGlob } from '../../src/core/glob.ts';
 import { isResultId, newResultId } from '../../src/core/ids.ts';
 import { nullLoggers } from '../../src/core/logger.ts';
 import { Signer } from '../../src/core/signing.ts';
@@ -34,6 +34,23 @@ describe('globs', () => {
         assert.equal(compileGlob('logs/app-?.log').matches('logs/app-1.log'), true);
         assert.equal(compileGlob('logs/*.log').matches('logs/x/y.log'), false);
         assert.equal(compileGlob('exports/').matches('exports/a/b'), true);
+        assert.equal(compileGlob('**/').matches('a/b/'), true);
+        assert.equal(compileGlob('**/').matches('a/b'), false);
+        assert.equal(compileGlob('a/**').matches('a/b/c'), true);
+    });
+
+    it('matches describe filters case-insensitively', () => {
+        assert.equal(compileFilter('Order?')('orders'), true);
+        assert.equal(compileFilter('*_log')('app.events_LOG'), true);
+        assert.equal(compileFilter('*_log')('app.events'), false);
+        assert.equal(compileFilter(undefined)('anything'), true);
+    });
+
+    it('matches hostile patterns in linear time', () => {
+        const started = performance.now();
+        assert.equal(compileFilter(`${'*a'.repeat(25)}b`)('a'.repeat(1000)), false);
+        assert.equal(compileGlob(`${'**a'.repeat(25)}**b`).matches('a'.repeat(1000)), false);
+        assert.ok(performance.now() - started < 1000);
     });
 });
 

@@ -1,4 +1,5 @@
 import { QueryRejectedError } from '../../core/errors.ts';
+import { lineCommentEnd } from '../common.ts';
 
 /**
  * Strict Oracle lexer and statement filter (concept §7.1 B). On 19c this is the only
@@ -14,8 +15,8 @@ export interface Token {
 }
 
 const Q_CLOSE: Record<string, string> = { '[': ']', '{': '}', '(': ')', '<': '>' };
-const WORD_START = /[A-Za-zÀ-￿]/;
-const WORD_PART = /[A-Za-z0-9_$#À-￿]/;
+const WORD_START = /[A-Za-z\p{L}]/u;
+const WORD_PART = /[A-Za-z0-9_$#\p{L}\p{M}\p{Nd}]/u;
 const WHITESPACE = /[ \t\r\n\f\v]/;
 const PUNCTUATION = new Set([
     '(',
@@ -55,8 +56,7 @@ export const lex = (sql: string): Token[] => {
             continue;
         }
         if (ch === '-' && next === '-') {
-            const end = sql.indexOf('\n', i);
-            i = end === -1 ? n : end + 1;
+            i = lineCommentEnd(sql, i);
             continue;
         }
         if (ch === '/' && next === '*') {

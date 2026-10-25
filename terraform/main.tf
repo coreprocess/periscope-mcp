@@ -33,6 +33,12 @@ locals {
       }
     }
   ]...)
+
+  # Key Vault Secrets User per secret, never on the whole vault: the vault may hold other applications' secrets.
+  key_vault_secret_scopes = merge(
+    { download-signing-key = azurerm_key_vault_secret.signing_key.resource_versionless_id },
+    { for env, secret in local.source_secrets : env => "${var.key_vault_id}/secrets/${regex("/secrets/([^/]+)", secret.id)[0]}" }
+  )
 }
 
 resource "azurerm_user_assigned_identity" "periscope" {
@@ -88,7 +94,9 @@ resource "azurerm_role_assignment" "results" {
 }
 
 resource "azurerm_role_assignment" "key_vault" {
-  scope                = var.key_vault_id
+  for_each = local.key_vault_secret_scopes
+
+  scope                = each.value
   role_definition_name = "Key Vault Secrets User"
   principal_id         = azurerm_user_assigned_identity.periscope.principal_id
 }

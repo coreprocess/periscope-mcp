@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { PeriscopeError } from '../core/errors.ts';
+import { PeriscopeError, QueryRejectedError } from '../core/errors.ts';
 
 /** Validates per-type query options, rejecting unknown keys. */
 export const parseOptions = <T extends z.ZodType>(schema: T, options: Record<string, unknown>): z.infer<T> => {
@@ -21,14 +21,17 @@ export const likePattern = (filter: string | undefined): string =>
               .replace(/\?/g, '_')
         : '%';
 
-/** Converts a `describe` filter into a RegExp. */
-export const filterRegex = (filter: string | undefined): RegExp => {
-    if (!filter) return /^/;
-    const source = filter
-        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*/g, '.*')
-        .replace(/\?/g, '.');
-    return new RegExp(`^${source}$`, 'i');
+/**
+ * End of a `--` line comment for the SQL lexers: the first CR or LF, because SQL Server ends a line comment at a
+ * lone CR. Other characters that some engine might read as a line break are rejected (fail closed).
+ */
+export const lineCommentEnd = (sql: string, start: number): number => {
+    const match = /[\r\n\v\f\u0085\u2028\u2029]/.exec(sql.slice(start));
+    if (!match) return sql.length;
+    if (match[0] !== '\r' && match[0] !== '\n') {
+        throw new QueryRejectedError('Unsupported line break character in a comment');
+    }
+    return start + match.index;
 };
 
 /** Milliseconds left until the deadline, at least 1. */

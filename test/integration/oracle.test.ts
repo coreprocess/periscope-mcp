@@ -35,6 +35,7 @@ const SETUP = [
 const ATTACKS = [
     'CREATE TABLE t2 (a NUMBER)',
     'DROP TABLE orders',
+    'SELECT 1 FROM dual --c\u2028DROP TABLE orders',
     'TRUNCATE TABLE orders',
     'ALTER TABLE orders ADD (z NUMBER)',
     'RENAME orders TO orders2',

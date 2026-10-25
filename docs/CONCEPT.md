@@ -94,7 +94,7 @@ The authoritative, complete reference is [configuration.md](configuration.md); i
 | `PERISCOPE_TRANSPORT`                                          | `stdio`                                   | `stdio` or `http`                                                                                                       |
 | `PERISCOPE_PORT`                                               | `8080`                                    | HTTP port                                                                                                               |
 | `PERISCOPE_PUBLIC_URL`                                         | (required for http)                       | Public base URL, e.g. `https://periscope.example.com`. The MCP endpoint is `<base>/mcp` and downloads are `<base>/r/…`. |
-| `PERISCOPE_AUTH`                                               | `entra`                                   | `entra`, or `none` (only allowed with stdio or a localhost bind)                                                        |
+| `PERISCOPE_AUTH`                                               | `entra`                                   | `entra`, or `none` (only allowed with stdio or a localhost bind; requests with another Host or Origin are rejected)     |
 | `PERISCOPE_AUTH_TENANT_ID`                                     |                                           | Entra tenant                                                                                                            |
 | `PERISCOPE_AUTH_CLIENT_ID`                                     |                                           | Periscope app registration (expected audience)                                                                          |
 | `PERISCOPE_AUTH_REQUIRED_ROLE`                                 | `Periscope.Reader`                        | App role required for any access                                                                                        |
@@ -689,7 +689,7 @@ The Cosmos NoSQL query language has no DML, and UDFs cannot write, so query stri
 3. **Query check**, synchronous in `query`. A lexer that understands KIM strings, comments, URLs and constructor payloads requires:
    - exactly one query, starting with `from`, `at` or `referrers of`
    - no `reveal` unless `ALLOW_REVEAL`: it discloses masked values, and KIM audits it
-   - URLs and `Reference(…)` literals only on the configured origin
+   - URLs (any `scheme://`) and `Reference(…)` literals only under the configured origin and stage, spelled exactly: no case variants, dot segments or encoded dots
    - no drafts: Periscope never sends a draft clock, only a snapshot
 
 The credential is reported as `unverified`: KIM grants what the service account is assigned, and a Reader cannot inspect its own assignments.
@@ -710,7 +710,8 @@ Several independent layers per type. All guard checks run synchronously in `quer
    - **Blocked by name:**
      - `dblink*`, `oracle_execute` (oracle_fdw can run arbitrary statements remotely), `pg_background*`, `cron.*`
      - `pg_advisory*`, `pg_notify`, `pg_terminate_backend`, `pg_cancel_backend`, `pg_reload_conf`, `set_config`, `lo_*`
-     - also `pg_logical_emit_message`, `pg_stat_reset*`, replication-slot functions, `pg_read_file`/`pg_ls_*`, `nextval`/`setval`, `txid_current`, `pg_sleep`
+     - also `pg_logical_emit_message`, `pg_stat_reset*`, `pg_stat_statements_reset`, replication-slot and replication-origin functions, `pg_create_restore_point`, `pg_backup_*`, `pg_read_file`/`pg_ls_*`, `nextval`/`setval`, `txid_current`, `pg_sleep`
+     - functions that run a query given as text or read a relation given by name, which the guard never sees: `query_to_xml*`, `cursor_to_xml*`, `table_to_xml*`, `schema_to_xml*`, `database_to_xml*`, `ts_stat`, `ts_rewrite`
    - **Views.** Postgres records no dependencies on built-in functions, so `pg_depend` cannot show that a view calls e.g. `pg_advisory_lock`. At startup Periscope therefore parses every readable view definition (`pg_get_viewdef`) with the same parser and blocks views that call a blocked function, transitively through views that read other blocked views. A definition that cannot be parsed blocks its view (fail closed).
    - **Strict mode.** The experiments showed that a user-defined function or a view can wrap `dblink_exec` invisibly, and the remote write persists despite the read-only transaction. So if the role can execute any function that writes outside the transaction (`dblink*`, `oracle_execute`, `pg_background*`, or functions in untrusted languages), the source switches to strict mode: every user-defined function, and every view that uses one, is blocked unless allowlisted with `ALLOW_ROUTINES`.
    - Otherwise plain user-defined functions stay allowed, because the engine blocks their local writes.
@@ -728,7 +729,7 @@ Oracle before 23ai has no session-level read-only mode, and DDL commits implicit
 | PL/SQL blocks, `WITH FUNCTION/PROCEDURE`                | Statement filter                                                                                                           |
 | Autonomous transactions, dynamic SQL in routines        | Routine inventory                                                                                                          |
 | Side-effecting system packages                          | System package allowlist                                                                                                   |
-1. **Statement filter.** A strict lexer handles comments, string literals including the `q'[…]'` syntax, and quoted identifiers. Any character or construct it does not recognize leads to rejection. Rules:
+1. **Statement filter.** A strict lexer handles comments, string literals including the `q'[…]'` syntax, and quoted identifiers. Any character or construct it does not recognize leads to rejection, including Unicode spaces and invisible characters outside literals. A `--` comment ends at CR or LF; a comment containing another line break character is rejected. Rules:
    - exactly one statement
    - first keyword `SELECT` or `WITH`
    - none of: `WITH FUNCTION`/`PROCEDURE`, PL/SQL blocks (`BEGIN`/`DECLARE`), `FOR UPDATE`, `NEXTVAL` (sequences advance even in a read-only transaction), `;`, database links (`@…`, unless `ALLOW_DBLINKS`)
@@ -747,7 +748,7 @@ Oracle before 23ai has no session-level read-only mode, and DDL commits implicit
 
 SQL Server has no read-only transaction mode, and T-SQL runs several statements in one batch. So the layers are a transaction that is always rolled back, a strict statement filter, a routine inventory, and optionally a read-only replica:
 1. **Engine: transaction that is always rolled back.** Every query runs in a transaction (`SNAPSHOT` or `READ COMMITTED`, §6.1) that ends with `ROLLBACK`. There is never a COMMIT. The experiments showed that INSERT/UPDATE/DELETE and `CREATE`/`DROP TABLE` are undone. A sequence advanced by `NEXT VALUE FOR` is not, `CREATE DATABASE` is not allowed inside a transaction at all, and side effects outside the database (extended procedures, OLE Automation, CLR, linked servers) are not undone either. The next two layers cover those.
-2. **Statement filter.** A strict lexer handles comments (which nest in T-SQL), string literals including `N'…'`, bracketed and quoted identifiers, and variables. Any character it does not recognize leads to rejection. T-SQL runs several statements in one batch even without semicolons (`SELECT 1 DELETE FROM t`), so checking the first keyword is not enough. Rules:
+2. **Statement filter.** A strict lexer handles comments (which nest in T-SQL), string literals including `N'…'`, bracketed and quoted identifiers, and variables. Any character it does not recognize leads to rejection, including Unicode spaces and invisible characters outside literals. A `--` comment ends at CR or LF, because SQL Server ends it at a lone CR; a comment containing another line break character is rejected. T-SQL runs several statements in one batch even without semicolons (`SELECT 1 DELETE FROM t`), so checking the first keyword is not enough. Rules:
    - first keyword `SELECT` or `WITH`
    - a second top-level `SELECT` only directly after `UNION`, `EXCEPT` or `INTERSECT` (`ALL`)
    - none of these keywords anywhere in the statement: statement keywords (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `EXEC`/`EXECUTE`, `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `GRANT`, `DBCC`, `BACKUP`, `BULK`, …), batch and control-flow keywords (`SET`, `DECLARE`, `BEGIN`, `WAITFOR`, `USE`, `GO`, …), `INTO` (`SELECT … INTO` creates a table), the remote rowset functions `OPENQUERY`, `OPENROWSET` and `OPENDATASOURCE`, and locking hints that hold or escalate locks for the whole export (`UPDLOCK`, `XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `PAGLOCK`, `SERIALIZABLE`, `REPEATABLEREAD`)
@@ -941,7 +942,7 @@ Periscope uses **its own user-assigned managed identity** and its own secrets. D
 
 - **Container App:** in a Container Apps environment with VNet integration and internal ingress, single revision mode. Set **`minReplicas: 1`**, so scale-to-zero doesn't kill running queries. On shutdown, running jobs are marked `failed` with partial data.
 - **Result store:** a dedicated storage account with a private endpoint and no public access. One container, plus a lifecycle rule that deletes blobs after the retention period.
-- **User-assigned identity** with the role assignments from §7.4, plus `AcrPull` (if using a private registry) and _Key Vault Secrets User_.
+- **User-assigned identity** with the role assignments from §7.4, plus `AcrPull` (if using a private registry) and _Key Vault Secrets User_ on each of its secrets (never on the whole vault).
 - **Entra app registration** (§7.2) with the group assignment.
 - **Key Vault secrets** for SQL credentials and the download signing key, referenced as Container App secrets.
 - **Public gateway** with a verified custom domain in front of the internal ingress, e.g. Application Gateway or Front Door. Requirements:
@@ -950,6 +951,7 @@ Periscope uses **its own user-assigned managed identity** and its own secrets. D
     - `get_result` waits at most 10 s.
     - MCP runs in stateless Streamable HTTP mode without the standalone server-to-client SSE stream (`GET /mcp` returns 405).
   - **No compression or other transformation of `/r/…` responses.** Respect `no-transform`, or disable gateway compression for that path. The files are already compressed, and re-encoding would break byte ranges (§6.4).
+  - **No access logs with `/r/…` paths.** The path carries the download token, a bearer capability; anyone who can read such a log can download the result until the URL expires. Disable access logging for Periscope's host or drop the path. Periscope audits every download itself.
 - **Reachability:** sources are reached through private endpoints or VNet routing from the Container Apps environment.
 
 ### 8.3 Terraform module
@@ -1071,7 +1073,7 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
   - zero-argument function calls, `WITH` chains
   - stored procedure execution, blob uploads and metadata writes
   - Redis write and read-looking write commands (`GETEX`, `GETDEL`, `SPOP`, `PFCOUNT`, `XREADGROUP`, `SORT … STORE`, …), blocking commands, scripts and transactions, quoting tricks in the command tokenizer
-  - KIM `reveal`, URLs and `Reference(…)` literals on foreign origins, texts that are not a query, bind parameters, and calls to draft, live session, backup and token-exchange endpoints
+  - KIM `reveal`, URLs and `Reference(…)` literals on foreign origins or other stages, texts that are not a query, bind parameters, and calls to draft, live session, backup and token-exchange endpoints
 
   This is complemented by property-based fuzzing of the Oracle lexer, and by unit tests of the KIM lexer, paging plans, anchor literals and wire allowlist.
 - **Pass criteria:**

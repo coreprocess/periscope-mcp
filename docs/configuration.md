@@ -10,7 +10,7 @@ All configuration comes from environment variables. For local use, `--env-file <
 | `PERISCOPE_HOST` | `0.0.0.0` (http), `127.0.0.1` (stdio) | Bind address of the HTTP listener |
 | `PERISCOPE_PORT` | `8080` (http), random (stdio) | HTTP port. In stdio mode the listener only serves downloads. |
 | `PERISCOPE_PUBLIC_URL` | derived from host and port | Public base URL, e.g. `https://periscope.example.com`. The MCP endpoint is `<base>/mcp`, downloads are `<base>/r/…`. Required for http with Entra auth. |
-| `PERISCOPE_AUTH` | `entra` (http), `none` (stdio) | `entra`: Entra issues the tokens (needs the host on a verified domain). `entra-broker`: Periscope is the authorization server and signs users in at Entra (any host). `none` is only allowed with stdio or a localhost bind |
+| `PERISCOPE_AUTH` | `entra` (http), `none` (stdio) | `entra`: Entra issues the tokens (needs the host on a verified domain). `entra-broker`: Periscope is the authorization server and signs users in at Entra (any host). `none` is only allowed with stdio or a localhost bind, and then rejects requests whose Host or Origin is not localhost or the public URL's host (DNS rebinding) |
 | `PERISCOPE_AUTH_TENANT_ID` | | Entra tenant ID (required for `entra` and `entra-broker`) |
 | `PERISCOPE_AUTH_CLIENT_ID` | | Client ID of the Periscope app registration: the expected token audience (`entra`) or the client Periscope signs in as (`entra-broker`) |
 | `PERISCOPE_AUTH_CLIENT_ASSERTION_FILE` | `AZURE_FEDERATED_TOKEN_FILE` | `entra-broker`: file with the federated token Periscope presents to Entra (AKS workload identity provides it) |
@@ -70,7 +70,7 @@ Keys for every source:
 | `URL` | Connection string, e.g. `postgres://user:password@host:5432/db?sslmode=require` |
 | `HOST`, `PORT`, `DATABASE`, `USER`, `PASSWORD` | Alternative to `URL` |
 | `AUTH` | `azure`: Entra token as password (Azure Database for PostgreSQL) |
-| `SSL` | `disable`, `require` (no certificate check) or `verify-full` |
+| `SSL` | `disable`, `require` or `verify-full` (both verify the server certificate and host name), or `no-verify` (encrypted without a certificate check, open to interception) |
 | `SEARCH_PATH` | Session search path |
 | `ALLOW_ROUTINES` | Comma-separated functions (`schema.name` or `name`) cleared after review; only relevant in strict mode |
 

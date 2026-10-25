@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { LogAnalyticsSourceConfig } from '../../config/sources.ts';
 import { parseIsoDuration } from '../../core/duration.ts';
 import { PeriscopeError, QueryRejectedError, WireGuardError } from '../../core/errors.ts';
+import { compileFilter } from '../../core/glob.ts';
 import { type ParquetColumn, scalarColumn, timestampColumn } from '../../results/parquet/columns.ts';
 import type {
     ExecutionContext,
@@ -13,7 +14,7 @@ import type {
     SourceInfo,
     TabularStream,
 } from '../adapter.ts';
-import { filterRegex, parseOptions, remaining } from '../common.ts';
+import { parseOptions, remaining } from '../common.ts';
 
 /**
  * Log Analytics (and workspace-based Application Insights) through the query REST API.
@@ -265,7 +266,7 @@ export class LogAnalyticsAdapter implements SourceAdapter {
     async describe(path: string | undefined, filter: string | undefined): Promise<unknown> {
         const signal = AbortSignal.timeout(120_000);
         const timespan = toInterval(resolveTimespan(this.config.defaultTimespan));
-        const matches = filterRegex(filter);
+        const matches = compileFilter(filter);
         if (!path) {
             const table = await this.#query(
                 'union withsource=_Table * | summarize rows = count() by _Table | order by _Table asc',
@@ -277,7 +278,7 @@ export class LogAnalyticsAdapter implements SourceAdapter {
                 level: 'tables',
                 timespan: this.config.defaultTimespan,
                 tables: table.rows
-                    .filter((row) => matches.test(String(row[0])))
+                    .filter((row) => matches(String(row[0])))
                     .map((row) => ({ table: row[0], rows: row[1] })),
             };
         }
@@ -291,7 +292,7 @@ export class LogAnalyticsAdapter implements SourceAdapter {
             level: 'table',
             table: path,
             columns: schema.rows
-                .filter((row) => matches.test(String(row[nameAt])))
+                .filter((row) => matches(String(row[nameAt])))
                 .map((row) => ({ name: row[nameAt], type: row[typeAt] })),
         };
     }

@@ -4,7 +4,7 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { BlobSourceConfig } from '../../config/sources.ts';
 import { PeriscopeError } from '../../core/errors.ts';
-import { compileGlob } from '../../core/glob.ts';
+import { compileFilter, compileGlob } from '../../core/glob.ts';
 import type {
     CredentialState,
     DocumentStream,
@@ -17,7 +17,7 @@ import type {
     SourceAdapter,
     SourceInfo,
 } from '../adapter.ts';
-import { filterRegex, parseOptions } from '../common.ts';
+import { parseOptions } from '../common.ts';
 import { createBlobClient } from './client.ts';
 
 const PAGE_SIZE = 5000;
@@ -238,12 +238,12 @@ export class BlobAdapter implements SourceAdapter, FileProvider {
 
     async describe(path: string | undefined, filter: string | undefined): Promise<unknown> {
         const client = this.#clientOrThrow;
-        const matches = filterRegex(filter);
+        const matches = compileFilter(filter);
         const trimmed = (path ?? '').replace(/^\/+/, '');
         if (!trimmed) {
             const containers: { name: string; lastModified: string | null }[] = [];
             for await (const container of client.listContainers()) {
-                if (matches.test(container.name)) {
+                if (matches(container.name)) {
                     containers.push({
                         name: container.name,
                         lastModified: container.properties.lastModified?.toISOString() ?? null,
@@ -262,7 +262,7 @@ export class BlobAdapter implements SourceAdapter, FileProvider {
         let truncated = false;
         for await (const item of container.listBlobsByHierarchy('/', { prefix })) {
             const leaf = item.name.slice(prefix.length).replace(/\/$/, '');
-            if (!matches.test(leaf)) continue;
+            if (!matches(leaf)) continue;
             if (prefixes.length + blobs.length >= DESCRIBE_LIMIT) {
                 truncated = true;
                 break;

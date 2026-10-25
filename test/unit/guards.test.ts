@@ -55,6 +55,14 @@ describe('postgres syntax-tree guard', () => {
             'SELECT lo_unlink(1)',
             "SELECT pg_logical_emit_message(true, 'x', 'y')",
             'SELECT 1 FROM t WHERE pg_sleep(100) IS NULL',
+            "SELECT query_to_xml('SELECT pg_terminate_backend(pid) FROM pg_stat_activity', true, false, '')",
+            "SELECT pg_catalog.query_to_xml_and_xmlschema('SELECT 1', true, false, '')",
+            "SELECT cursor_to_xml('c', 1, true, false, '')",
+            "SELECT table_to_xml('blocked_view', true, false, '')",
+            "SELECT ts_stat('SELECT dblink_exec(''x'', ''DELETE FROM t'')')",
+            'SELECT pg_stat_statements_reset()',
+            "SELECT pg_logical_slot_get_changes('s', NULL, NULL)",
+            "SELECT pg_replication_origin_advance('o', '0/0')",
             'DO $$ BEGIN END $$',
             'NOT EVEN SQL',
         ]) {
@@ -76,6 +84,11 @@ describe('oracle lexer and statement filter', () => {
         assert.deepEqual(
             lex("SELECT q'[it's ; ]' , 'a;b', \"Weird;Name\", :p1 /* ; */ FROM dual -- ;").map((t) => t.type),
             ['word', 'string', 'punct', 'string', 'punct', 'quoted', 'punct', 'bind', 'word', 'word']
+        );
+        // a line comment ends at a lone CR as well
+        assert.deepEqual(
+            lex('SELECT 1 --c\rFROM dual').map((t) => t.value),
+            ['SELECT', '1', 'FROM', 'DUAL']
         );
     });
 
@@ -113,6 +126,9 @@ describe('oracle lexer and statement filter', () => {
             "SELECT q'[open FROM dual",
             'SELECT 1 /* open',
             'SELECT\u00a01 FROM dual',
+            'SELECT 1 FROM dual --c\u2028DROP TABLE t',
+            'SELECT a\u2028b FROM dual',
+            'SELECT a\u200bb FROM dual',
             'MERGE INTO t USING dual ON (1=0) WHEN NOT MATCHED THEN INSERT (a) VALUES (1)',
             '',
         ]) {
@@ -147,6 +163,8 @@ describe('sql server lexer and statement filter', () => {
             "SELECT JSON_VALUE(doc, '$.a') FROM t CROSS APPLY OPENJSON(doc)",
             'SELECT * FROM t WHERE id = @id AND x = 0x1F',
             'SELECT COUNT(*) OVER (PARTITION BY a) FROM #temp',
+            'SELECT 1 AS a -- note\r\nFROM t',
+            'SELECT [Größe] FROM t',
         ]) {
             check(sql);
         }
@@ -171,6 +189,9 @@ describe('sql server lexer and statement filter', () => {
             'SELECT [open',
             'SELECT 1 /* open /* nested */',
             'SELECT\u00a01',
+            'SELECT 1 --c\rDELETE FROM t',
+            'SELECT 1 --c\u2028DELETE FROM t',
+            'SELECT a\u2028DELETE FROM t',
             'SET ROWCOUNT 1',
             '',
         ]) {
@@ -185,7 +206,7 @@ describe('sql server lexer and statement filter', () => {
 
 describe('kim query check and wire allowlist', () => {
     const origin = 'https://kim.example.com';
-    const check = (text: string, allowReveal = false) => analyzeKimQuery(text, { origin, allowReveal });
+    const check = (text: string, allowReveal = false) => analyzeKimQuery(text, { origin, stage: 's', allowReveal });
 
     it('lexes URLs, strings and comments', () => {
         assert.deepEqual(
@@ -256,6 +277,13 @@ describe('kim query check and wire allowlist', () => {
             'referrers x',
             `from ${origin}/s/orders first 5 reveal $.mail`,
             'from https://other.example.com/s/orders first 5',
+            'from HTTPS://other.example.com/s/orders first 5',
+            `from ${origin}/other-stage/orders first 5`,
+            `from ${origin}/s/../other-stage/orders first 5`,
+            `from ${origin}/s/%2e%2e/other-stage/orders first 5`,
+            `from ${origin}/s/orders where $.r == Reference( https://other.example.com/s/x/y) first 5`,
+            `from ${origin}/s/orders where $.r == Reference(${origin}/other-stage/x/y) first 5`,
+            `from ${origin}/s/orders -- c\rreveal $.mail first 5`,
             `from ${origin}/s/orders where $.a == "open first 5`,
             `from ${origin}/s/orders where ($.a == 1 first 5`,
             `from ${origin}/s/orders; first 5`,
