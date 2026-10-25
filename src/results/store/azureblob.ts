@@ -29,9 +29,8 @@ export class AzureBlobResultStore implements ResultStore {
         this.#container = service.getContainerClient(options.container);
     }
 
-    async init(): Promise<void> {
-        await this.#container.createIfNotExists();
-    }
+    /** The container belongs to the deployment, which creates it with the storage account. */
+    async init(): Promise<void> {}
 
     async put(path: string, body: Buffer | string, contentType: string): Promise<void> {
         const data = typeof body === 'string' ? Buffer.from(body) : body;

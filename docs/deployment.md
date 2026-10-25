@@ -39,7 +39,7 @@ module "periscope" {
 The module creates:
 
 - **A user-assigned identity for Periscope.** Don't reuse the application's own identity, which usually holds write roles.
-- **A private result storage account** with a lifecycle rule that deletes results after the retention period. The identity gets *Storage Blob Data Contributor* on the result container only.
+- **A private result storage account** with a lifecycle rule that deletes results after the retention period. The module creates the result container (Periscope expects it to exist), and the identity gets *Storage Blob Data Contributor* on that container only.
 - **The Entra app registration** described in step 3.
 - **The download signing key** in Key Vault.
 - **The Container App**, with a minimum of one replica, so running queries survive.
