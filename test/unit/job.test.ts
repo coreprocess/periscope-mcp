@@ -23,8 +23,6 @@ class FakeAdapter implements SourceAdapter {
             type: 'redis',
             name: 'fake',
             description: undefined,
-            requiredRole: undefined,
-            downloadRole: undefined,
             maxQueryDurationMs: 60_000,
             maxResultBytes: 1024 ** 3,
             ...overrides,

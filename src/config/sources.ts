@@ -31,8 +31,6 @@ const auth = z.enum(['azure']);
 const common = {
     NAME: z.string().regex(/^[a-z0-9_-]{1,64}$/, 'must match [a-z0-9_-]{1,64}'),
     DESCRIPTION: z.string().optional(),
-    REQUIRED_ROLE: z.string().min(1).optional(),
-    DOWNLOAD_ROLE: z.string().min(1).optional(),
     MAX_QUERY_DURATION: duration.optional(),
     MAX_RESULT_BYTES: positiveInt.optional(),
 };
@@ -147,8 +145,6 @@ interface CommonSourceConfig {
     index: number;
     name: string;
     description: string | undefined;
-    requiredRole: string | undefined;
-    downloadRole: string | undefined;
     maxQueryDurationMs: number;
     maxResultBytes: number;
 }
@@ -264,8 +260,6 @@ const commonFields = (index: number, raw: Raw<SourceType>, defaults: SourceDefau
     index,
     name: raw.NAME,
     description: raw.DESCRIPTION,
-    requiredRole: raw.REQUIRED_ROLE,
-    downloadRole: raw.DOWNLOAD_ROLE,
     maxQueryDurationMs: raw.MAX_QUERY_DURATION ?? defaults.maxQueryDurationMs,
     maxResultBytes: raw.MAX_RESULT_BYTES ?? defaults.maxResultBytes,
 });

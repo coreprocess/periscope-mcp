@@ -67,9 +67,7 @@ module "periscope" {
   cosmos_data_readers = [
     { resource_group_name = var.resource_group_name, account_name = var.cosmos_account_name },
   ]
-  app_role_members = {
-    "Periscope.Reader" = [var.reader_group_object_id]
-  }
+  readers = [var.reader_group_object_id]
 }
 
 output "mcp_url" { value = module.periscope.mcp_url }

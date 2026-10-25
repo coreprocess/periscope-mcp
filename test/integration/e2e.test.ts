@@ -94,22 +94,12 @@ describe('end to end (http + entra auth, stdio)', () => {
         const port = await freePort();
         base = `http://127.0.0.1:${port}`;
         sourceEnv = {
-            PERISCOPE_SOURCE_N: '3',
+            PERISCOPE_SOURCE_N: '1',
             PERISCOPE_SOURCE_0_NAME: 'shop',
             PERISCOPE_SOURCE_0_TYPE: 'postgres',
             PERISCOPE_SOURCE_0_URL: url,
             PERISCOPE_SOURCE_0_SSL: 'disable',
             PERISCOPE_SOURCE_0_DESCRIPTION: 'Shop items',
-            PERISCOPE_SOURCE_1_NAME: 'secret',
-            PERISCOPE_SOURCE_1_TYPE: 'postgres',
-            PERISCOPE_SOURCE_1_URL: url,
-            PERISCOPE_SOURCE_1_SSL: 'disable',
-            PERISCOPE_SOURCE_1_REQUIRED_ROLE: 'Periscope.ProdReader',
-            PERISCOPE_SOURCE_2_NAME: 'nodownload',
-            PERISCOPE_SOURCE_2_TYPE: 'postgres',
-            PERISCOPE_SOURCE_2_URL: url,
-            PERISCOPE_SOURCE_2_SSL: 'disable',
-            PERISCOPE_SOURCE_2_DOWNLOAD_ROLE: 'Periscope.Download',
         };
         periscope = spawn(process.execPath, ['src/index.ts'], {
             env: {
@@ -199,9 +189,8 @@ describe('end to end (http + entra auth, stdio)', () => {
             sources: { name: string }[];
         };
         assert.deepEqual(
-            sources.sources.map((s) => s.name).sort(),
-            ['nodownload', 'shop'],
-            'sources requiring other roles are hidden'
+            sources.sources.map((s) => s.name),
+            ['shop']
         );
 
         const rejected = await client.callTool({
@@ -211,8 +200,8 @@ describe('end to end (http + entra auth, stdio)', () => {
         assert.equal(rejected.isError, true);
         assert.equal((text(rejected).error as { code: string }).code, 'query_rejected');
 
-        const hidden = await client.callTool({ name: 'query', arguments: { source: 'secret', query: 'SELECT 1' } });
-        assert.equal((text(hidden).error as { code: string }).code, 'unknown_source');
+        const unknown = await client.callTool({ name: 'query', arguments: { source: 'nope', query: 'SELECT 1' } });
+        assert.equal((text(unknown).error as { code: string }).code, 'unknown_source');
 
         const described = text(
             await client.callTool({ name: 'describe', arguments: { source: 'shop', path: 'public.items' } })
@@ -280,20 +269,6 @@ describe('end to end (http + entra auth, stdio)', () => {
         await client.close();
     });
 
-    it('withholds download URLs without the download role', async () => {
-        const client = await connect(await mint());
-        const started = text(
-            await client.callTool({ name: 'query', arguments: { source: 'nodownload', query: 'SELECT 1 AS one' } })
-        );
-        const result = text(
-            await client.callTool({ name: 'get_result', arguments: { resultId: started.resultId, wait: 10 } })
-        );
-        const download = result.download as Record<string, unknown>;
-        assert.equal(download.downloadAllowed, false);
-        assert.equal(download.manifestUrl, undefined);
-        await client.close();
-    });
-
     it('works over stdio with a local download endpoint', async () => {
         const client = new Client({ name: 'e2e-stdio', version: '1.0.0' });
         await client.connect(
@@ -312,7 +287,7 @@ describe('end to end (http + entra auth, stdio)', () => {
             })
         );
         const sources = text(await client.callTool({ name: 'list_sources', arguments: {} })) as { sources: unknown[] };
-        assert.equal(sources.sources.length, 3, 'local caller holds every role');
+        assert.equal(sources.sources.length, 1);
         const started = text(
             await client.callTool({
                 name: 'query',

@@ -4,15 +4,13 @@
 data "azuread_client_config" "current" {}
 
 locals {
-  mcp_url   = "${var.public_url}/mcp"
-  app_roles = ["Periscope.Reader", "Periscope.ProdReader", "Periscope.Download"]
+  mcp_url = "${var.public_url}/mcp"
 }
 
 resource "random_uuid" "scope" {}
 
-resource "random_uuid" "role" {
-  for_each = toset(local.app_roles)
-}
+# Periscope.Reader is the only app role: it grants access to every source.
+resource "random_uuid" "reader" {}
 
 resource "azuread_application" "periscope" {
   display_name     = var.name
@@ -35,16 +33,13 @@ resource "azuread_application" "periscope" {
     }
   }
 
-  dynamic "app_role" {
-    for_each = toset(local.app_roles)
-    content {
-      id                   = random_uuid.role[app_role.value].result
-      value                = app_role.value
-      display_name         = app_role.value
-      description          = "Periscope role ${app_role.value}"
-      allowed_member_types = ["User"]
-      enabled              = true
-    }
+  app_role {
+    id                   = random_uuid.reader.result
+    value                = "Periscope.Reader"
+    display_name         = "Periscope.Reader"
+    description          = "Access to every source of this Periscope"
+    allowed_member_types = ["User"]
+    enabled              = true
   }
 
   # claude.ai custom connector (confidential client with secret)
@@ -64,19 +59,11 @@ resource "azuread_service_principal" "periscope" {
   owners                       = [data.azuread_client_config.current.object_id]
 }
 
-locals {
-  role_members = flatten([
-    for role, members in var.app_role_members : [
-      for member in members : { role = role, member = member }
-    ]
-  ])
-}
+resource "azuread_app_role_assignment" "readers" {
+  for_each = toset(var.readers)
 
-resource "azuread_app_role_assignment" "members" {
-  for_each = { for m in local.role_members : "${m.role}/${m.member}" => m }
-
-  app_role_id         = random_uuid.role[each.value.role].result
-  principal_object_id = each.value.member
+  app_role_id         = random_uuid.reader.result
+  principal_object_id = each.value
   resource_object_id  = azuread_service_principal.periscope.object_id
 }
 

@@ -124,10 +124,10 @@ variable "cosmos_data_readers" {
   default = []
 }
 
-variable "app_role_members" {
-  description = "Object IDs (users or groups) per app role: Periscope.Reader, Periscope.ProdReader, Periscope.Download."
-  type        = map(list(string))
-  default     = {}
+variable "readers" {
+  description = "Object IDs of users or groups that get the app role Periscope.Reader (access to every source)."
+  type        = list(string)
+  default     = []
 }
 
 variable "create_connector_secret" {

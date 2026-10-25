@@ -88,8 +88,6 @@ describe('oracle source', () => {
             type: 'oracle',
             name: `ora_${user.toLowerCase()}`,
             description: undefined,
-            requiredRole: undefined,
-            downloadRole: undefined,
             maxQueryDurationMs: 120_000,
             maxResultBytes: 1024 ** 3,
             connectString: `${host}/${SERVICE}`,

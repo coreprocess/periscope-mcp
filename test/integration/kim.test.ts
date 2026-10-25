@@ -265,8 +265,6 @@ describe('kim source (mock API)', () => {
             type: 'kim',
             name: 'app',
             description: undefined,
-            requiredRole: undefined,
-            downloadRole: undefined,
             maxQueryDurationMs: 60_000,
             maxResultBytes: 1024 ** 3,
             url: mock.origin,

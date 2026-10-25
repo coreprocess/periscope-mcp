@@ -163,6 +163,23 @@ describe('source configuration', () => {
                 ),
             /PERISCOPE_SOURCE_0_SAS.*unknown key/
         );
+        // per-source roles are gone: the app role opens every source
+        for (const key of ['REQUIRED_ROLE', 'DOWNLOAD_ROLE']) {
+            expectConfigError(
+                () =>
+                    parseSources(
+                        {
+                            PERISCOPE_SOURCE_N: '1',
+                            PERISCOPE_SOURCE_0_NAME: 'a',
+                            PERISCOPE_SOURCE_0_TYPE: 'redis',
+                            PERISCOPE_SOURCE_0_HOST: 'h',
+                            [`PERISCOPE_SOURCE_0_${key}`]: 'Periscope.Other',
+                        },
+                        defaults
+                    ),
+                new RegExp(`PERISCOPE_SOURCE_0_${key}.*unknown key`)
+            );
+        }
         expectConfigError(
             () =>
                 parseSources(

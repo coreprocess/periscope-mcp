@@ -32,7 +32,7 @@ module "periscope" {
     { scope = azurerm_log_analytics_workspace.main.id, role_definition_name = "Log Analytics Reader" },
   ]
   cosmos_data_readers = [{ resource_group_name = "rg-app-tst", account_name = "cosmos-app-tst" }]
-  app_role_members    = { "Periscope.Reader" = [azuread_group.periscope_users.object_id] }
+  readers             = [azuread_group.periscope_users.object_id]
 }
 ```
 
@@ -60,7 +60,7 @@ The module applies this configuration. If you configure Entra by hand, the order
 1. **Set the access token version to 2 first.** Apps on v1 tokens cannot use custom HTTPS identifier URIs.
 2. **Set the Application ID URI to exactly the MCP URL:** `https://periscope.example.com/mcp`, with no trailing slash, on a verified domain. MCP clients send this URL as the `resource` parameter, and Entra accepts it only if it matches exactly.
 3. **Expose the scope `Periscope.Access`.** Clients request `https://periscope.example.com/mcp/Periscope.Access`.
-4. **Add app roles** `Periscope.Reader`, `Periscope.ProdReader` and `Periscope.Download`. Set *assignment required* on the enterprise application and assign groups.
+4. **Add the app role** `Periscope.Reader`, the only one; it grants access to every source. Set *assignment required* on the enterprise application and assign groups.
 5. **Add redirect URIs:**
    - `https://claude.ai/api/mcp/auth_callback` (web, for the claude.ai connector)
    - `http://localhost` and `http://127.0.0.1` (mobile and desktop, for Claude Code)
@@ -81,7 +81,7 @@ Periscope validates the following claims:
 One app registration per deployment:
 
 1. **Add a web redirect URI** `https://periscope.example.com/oauth/callback`. No Application ID URI and no exposed scope are needed.
-2. **Add app roles** `Periscope.Reader`, `Periscope.ProdReader` and `Periscope.Download`. Set *assignment required* on the enterprise application and assign groups. The roles must reach the ID token, which they do for app roles assigned to users and groups.
+2. **Add the app role** `Periscope.Reader`, the only one; it grants access to every source. Set *assignment required* on the enterprise application and assign groups. The roles must reach the ID token, which they do for app roles assigned to users and groups.
 3. **Add a credential.** Preferred is a **federated identity credential** for Periscope's Kubernetes service account: issuer = the cluster's OIDC issuer URL, subject `system:serviceaccount:<namespace>:<service account>`, audience `api://AzureADTokenExchange`. Periscope then presents the token that AKS workload identity mounts (`AZURE_FEDERATED_TOKEN_FILE`) and needs no secret. Alternatively set `PERISCOPE_AUTH_CLIENT_SECRET`.
 4. **Grant admin consent** for `openid profile offline_access` (Microsoft Graph), so users aren't prompted.
 

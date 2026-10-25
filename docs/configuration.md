@@ -18,7 +18,7 @@ All configuration comes from environment variables. For local use, `--env-file <
 | `PERISCOPE_AUTH_REDIRECT_URIS` | `https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback` | `entra-broker`: HTTPS redirect URIs MCP clients may register; loopback (`http://localhost`, `127.0.0.1`, `[::1]`, any port) is always allowed |
 | `PERISCOPE_AUTH_ACCESS_TOKEN_TTL` | `PT1H` | `entra-broker`: access token lifetime; roles are re-read from Entra at every refresh |
 | `PERISCOPE_AUTH_SESSION_TTL` | `P30D` | `entra-broker`: refresh token lifetime, after which users sign in again |
-| `PERISCOPE_AUTH_REQUIRED_ROLE` | `Periscope.Reader` | App role required for any access |
+| `PERISCOPE_AUTH_REQUIRED_ROLE` | `Periscope.Reader` | The one app role: it grants access to every source, including downloads |
 | `PERISCOPE_AUTH_SCOPE` | `Periscope.Access` | `entra`: name of the delegated scope; clients request `<public url>/mcp/<scope>` |
 | `PERISCOPE_AUTH_ISSUER` | `https://login.microsoftonline.com/<tenant>/v2.0` | Entra issuer; `entra-broker` reads its endpoints from the issuer's discovery document (override for sovereign clouds or tests) |
 | `PERISCOPE_AUTH_JWKS_URI` | `https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys` | Signing keys (override for sovereign clouds or tests) |
@@ -57,8 +57,6 @@ Keys for every source:
 | Key | Description |
 |---|---|
 | `DESCRIPTION` | Shown to the agent in `list_sources`; describe what the data is |
-| `REQUIRED_ROLE` | App role needed to see and use this source |
-| `DOWNLOAD_ROLE` | App role needed to get download URLs; without it results can only be paged with `read_result` |
 | `MAX_QUERY_DURATION` | ISO 8601 duration, overrides the global default |
 | `MAX_RESULT_BYTES` | Overrides the global default |
 
