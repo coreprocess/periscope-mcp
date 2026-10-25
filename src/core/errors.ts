@@ -52,7 +52,19 @@ export const isPeriscopeError = (error: unknown): error is PeriscopeError => err
 
 export const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+const SUMMARY_CHARS = 300;
+
+/**
+ * What a client sees of a foreign error: its first line, shortened. Driver and SDK errors
+ * continue with hostnames, request paths, headers and credential chains; those stay in the
+ * server log.
+ */
+export const summaryOf = (error: unknown): string => {
+    const line = (errorMessage(error).split(/\r?\n/, 1)[0] ?? '').trim();
+    return line.length > SUMMARY_CHARS ? `${line.slice(0, SUMMARY_CHARS - 1)}…` : line;
+};
+
 export const toPeriscopeError = (error: unknown, fallback: ErrorCode = 'internal'): PeriscopeError => {
     if (isPeriscopeError(error)) return error;
-    return new PeriscopeError(fallback, errorMessage(error), undefined, { cause: error });
+    return new PeriscopeError(fallback, summaryOf(error), undefined, { cause: error });
 };

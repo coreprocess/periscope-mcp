@@ -150,6 +150,9 @@ export class Job {
             this.#writer = undefined;
             const reason = this.#controller.signal.aborted ? this.#controller.signal.reason : error;
             const failure = toPeriscopeError(reason, 'source_error');
+            if (failure.code !== 'cancelled' && failure.cause !== undefined) {
+                this.#options.log.warn({ err: failure, resultId: this.manifest.resultId }, 'query failed');
+            }
             this.#complete(failure.code === 'cancelled' ? 'cancelled' : 'failed', {
                 code: failure.code,
                 message: failure.message,
