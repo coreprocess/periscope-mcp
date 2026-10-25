@@ -30,6 +30,7 @@ WORKDIR /app
 COPY --from=deps --chown=node:node /app/package.json ./
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
-USER node
+# numeric, so Kubernetes can verify runAsNonRoot (the official image's node user)
+USER 1000:1000
 EXPOSE 8080
 ENTRYPOINT ["node", "/app/dist/index.js"]
