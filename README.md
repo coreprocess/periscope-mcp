@@ -76,7 +76,7 @@ docker run -i --rm --env-file .env.periscope \
 
 ## Deploy
 
-Periscope is built to run as one container per project and environment, inside the network where the data sources are reachable, published through a gateway with a verified custom domain and protected by Microsoft Entra ID (OAuth 2.1, MCP authorization spec). See [docs/deployment.md](docs/deployment.md) and the Terraform module in [terraform/](terraform/).
+Periscope is built to run as one container per project and environment, inside the network where the data sources are reachable, protected by Microsoft Entra ID (OAuth 2.1, MCP authorization spec): directly when the host is on a domain verified in the tenant, otherwise through Periscope's built-in authorization server, which signs users in at Entra (`PERISCOPE_AUTH=entra-broker`). See [docs/deployment.md](docs/deployment.md) and the Terraform module in [terraform/](terraform/).
 
 ## Configuration
 

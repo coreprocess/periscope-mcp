@@ -48,6 +48,13 @@ Point the gateway at the `internal_fqdn` output.
 
 ## 3. Entra ID
 
+Choose the mode by the host name (concept §7.2):
+
+- **`PERISCOPE_AUTH=entra`** if the Periscope host is on a domain verified in your tenant. Entra issues the tokens. The Terraform module uses this mode.
+- **`PERISCOPE_AUTH=entra-broker`** otherwise. No Claude client can change the `resource` parameter that Entra matches against the Application ID URI, so Periscope runs the OAuth flow itself and signs users in at Entra.
+
+### Direct mode (`entra`)
+
 The module applies this configuration. If you configure Entra by hand, the order and exactness matter:
 
 1. **Set the access token version to 2 first.** Apps on v1 tokens cannot use custom HTTPS identifier URIs.
@@ -69,6 +76,17 @@ Periscope validates the following claims:
 | `scp` | contains `Periscope.Access` |
 | `roles` | contains the required app role |
 
+### Broker mode (`entra-broker`)
+
+One app registration per deployment:
+
+1. **Add a web redirect URI** `https://periscope.example.com/oauth/callback`. No Application ID URI and no exposed scope are needed.
+2. **Add app roles** `Periscope.Reader`, `Periscope.ProdReader` and `Periscope.Download`. Set *assignment required* on the enterprise application and assign groups. The roles must reach the ID token, which they do for app roles assigned to users and groups.
+3. **Add a credential.** Preferred is a **federated identity credential** for Periscope's Kubernetes service account: issuer = the cluster's OIDC issuer URL, subject `system:serviceaccount:<namespace>:<service account>`, audience `api://AzureADTokenExchange`. Periscope then presents the token that AKS workload identity mounts (`AZURE_FEDERATED_TOKEN_FILE`) and needs no secret. Alternatively set `PERISCOPE_AUTH_CLIENT_SECRET`.
+4. **Grant admin consent** for `openid profile offline_access` (Microsoft Graph), so users aren't prompted.
+
+Set `PERISCOPE_AUTH=entra-broker`, `PERISCOPE_AUTH_TENANT_ID`, `PERISCOPE_AUTH_CLIENT_ID`, `PERISCOPE_PUBLIC_URL` and `PERISCOPE_DOWNLOAD_SIGNING_KEY` (it also seals the OAuth tokens).
+
 ## 4. Connect Claude
 
 **claude.ai custom connector (recommended).** An organization admin adds a custom connector with:
@@ -88,6 +106,8 @@ Each user signs in once. The connector is then available:
 ```bash
 claude mcp add --transport http --client-id <client-id> --callback-port 8765 periscope https://periscope.example.com/mcp
 ```
+
+**In broker mode** clients register themselves: the claude.ai connector needs only the URL, and Claude Code only `claude mcp add --transport http periscope https://periscope.example.com/mcp`.
 
 **Downloads from cloud sessions.** Connector traffic needs no network allowlist, but `curl` downloads from the cloud sandbox do. Add the Periscope hostname to the cloud environment's allowed domains (custom network access).
 

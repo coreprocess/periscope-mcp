@@ -804,7 +804,16 @@ Redis has no read-only session mode on a primary, and some commands that look li
 
 ### 7.2 Authentication
 
-**No static API keys.** They cannot identify the user, they don't expire, and they end up in configs. Periscope is an **OAuth 2.1 resource server** following the MCP authorization spec, with **Microsoft Entra ID (v2 endpoints) as the authorization server**.
+**No static API keys.** They cannot identify the user, they don't expire, and they end up in configs. Users always sign in with Microsoft Entra ID. Periscope supports two modes (`PERISCOPE_AUTH`):
+
+| Mode | Authorization server for MCP clients | Entra app registration | Use when |
+|---|---|---|---|
+| `entra` | Entra ID itself; Periscope is an **OAuth 2.1 resource server** | Application ID URI = the MCP URL on a **verified domain**, exposed scope | the Periscope host is on a domain verified in the tenant |
+| `entra-broker` | **Periscope**, which signs the user in at Entra (see *Broker mode* below) | plain web app: one redirect URI, app roles; no identifier URI, no scope | the host is not on a verified domain |
+
+MCP clients send the MCP URL as the RFC 8707 `resource` parameter, as the MCP specification requires, and no Claude client can change or omit it. Entra accepts that only if it matches an Application ID URI of the app, and HTTPS Application ID URIs are limited to verified domains. An `api://` identifier fails with `AADSTS9010010`. Without a verified domain, only broker mode works.
+
+#### Direct mode (`entra`)
 
 **What Periscope does:**
 - **Discovery.** Serves Protected Resource Metadata (RFC 9728) at `/.well-known/oauth-protected-resource/mcp`:
@@ -828,7 +837,7 @@ Redis has no read-only session mode on a primary, and some commands that look li
   - app roles in `roles`
   - optionally `azp` against an allowlist of known client IDs
 - **Audit.** Writes `oid`/`upn` into the audit log for every call.
-- **No OAuth token issuance.** Periscope never issues OAuth tokens. It only signs download URLs (§6.4).
+- **No OAuth token issuance.** In this mode Periscope never issues OAuth tokens. It only signs download URLs (§6.4).
 
 **Entra setup**, one app registration per deployment (e.g. with the `azuread` Terraform provider). The order and exactness matter:
 
@@ -852,16 +861,38 @@ Entra has no Dynamic Client Registration and no Client ID Metadata Documents, so
 | `claude mcp add` / `.mcp.json` (local fallback)                              | `claude mcp add --transport http --client-id <id> --callback-port <port> periscope https://periscope.example.com/mcp`. Alternatively a `headersHelper` running `az account get-access-token --scope https://periscope.example.com/mcp/.default`, which needs the Azure CLI pre-authorized on the scope.                                                                                                                                                                                                                              |
 | **Unattended cloud agents** (scheduled tasks / routines, API-triggered runs) | They use the claude.ai connectors of the user who owns the task, and everything they do through Periscope appears as that user (audit log included). Claude refreshes tokens before they expire. The Entra refresh token has a sliding lifetime of about 90 days, unless Conditional Access sign-in frequency shortens it. If the refresh token dies, there is no unattended re-authentication: runs fail on Periscope calls until the user reconnects the connector in claude.ai. Scheduled tasks are currently a research preview. |
 
-**Known risks, to verify at deployment (§12):**
+**Known risks of direct mode:**
 - **End to end with Claude Code against a path-qualified App ID URI.** Microsoft and Anthropic both document this configuration, but no first-hand report of a successful Claude Code sign-in has been found yet.
-- **Reconnects.** Community reports describe an Entra error on reconnect, where the requested scope falls back to Microsoft Graph (`AADSTS650053`).
+- **Reconnects.** Community reports describe an Entra error on reconnect, where the requested scope falls back to Microsoft Graph (`AADSTS650053`). Broker mode is not affected: Claude only ever talks to Periscope.
 
 **Network.**
 - **The endpoints must be publicly reachable over IPv4** for claude.ai connectors and cloud sessions.
 - **Cloud downloads need an allowlist entry.** Connector traffic needs no allowlist, but downloads (`curl` from the sandbox) do: the Periscope hostname must be in the cloud environment's network access list (Custom access level). Otherwise the sandbox gets `403` with `x-deny-reason: host_not_allowed`.
 - **No IP allowlisting is planned.** Security rests on authentication (OAuth for `/mcp`) and on signed, expiring URLs (for `/r/…`). Operators who want an extra network layer can restrict `/mcp` at their gateway to Anthropic's published egress range (`160.79.104.0/21`) plus their own egress addresses. That is purely optional and not part of Periscope. An IP allowlist on the _claude.ai organization_ itself is a different feature: it breaks Anthropic-hosted cloud sessions.
 
-**Plan B,** if the direct Entra setup fails at deployment: an OAuth facade inside Periscope. Periscope would act as authorization server towards clients: RFC 8414 metadata, CIMD/DCR, stripping or rewriting `resource` and scopes towards Entra. Login would still be delegated to Entra. That works with every client, but Periscope would then issue OAuth tokens, which brings signing keys and state.
+#### Broker mode (`entra-broker`)
+
+Periscope is the **authorization server** towards MCP clients and an ordinary **confidential web client** towards Entra. The user still signs in at Entra, and every request carries that user.
+
+| Step | What happens |
+|---|---|
+| Discovery | Protected Resource Metadata names Periscope itself as authorization server; RFC 8414 metadata at `/.well-known/oauth-authorization-server` |
+| Registration | Dynamic client registration at `/oauth/register`, **stateless**: the client ID is the registered metadata plus an HMAC. Redirect URIs must be loopback (`http://localhost`, `127.0.0.1`, `[::1]`, any port) or listed in `PERISCOPE_AUTH_REDIRECT_URIS` (default: the claude.ai and claude.com connector callbacks), so a registered client can never send codes elsewhere. Public clients (`none`) and confidential ones (`client_secret_post`/`_basic`, secret = HMAC of the client ID) |
+| Authorization | `GET /oauth/authorize` requires `response_type=code`, PKCE S256, a registered redirect URI (loopback on any port, RFC 8252) and, if sent, `resource` = the MCP URL (a trailing slash is tolerated). It answers with a **consent page** that names the client and its redirect host. Entra would sign a user in silently (single sign-on), so without this step a crafted link could hand a session to a client the user never started |
+| Confirmation | The page posts back to `POST /oauth/authorize`. The request is sealed and bound to an HttpOnly `SameSite=Lax` cookie set with the page; browsers don't send that cookie on cross-site POSTs, so another site cannot confirm for the user. The page can't be framed. Periscope then redirects to Entra with its own PKCE, a nonce, scopes `openid profile offline_access` and an encrypted `state` (10 min) bound to the same cookie |
+| Callback | `/oauth/callback` checks state and cookie, redeems the Entra code with a **client assertion** (the federated service account token of workload identity) or a client secret, and verifies the ID token: signature (JWKS from Entra's discovery), issuer, audience, nonce, tenant, `oid`, and the required app role. It returns its own authorization code (encrypted, 2 min, single use) with `state` and `iss` (RFC 9207) |
+| Token | `/oauth/token` checks the client, the redirect URI and PKCE, then issues an **access token** (HS256 JWT, `typ` `at+jwt`, `aud` = the MCP URL, 1 h) and a **refresh token** (encrypted, bound to the client, carries the Entra refresh token, valid for the session length, 30 days by default) |
+| Refresh | Every refresh signs in at Entra again with the Entra refresh token and re-reads the roles. A disabled account, a revoked session or a removed app role ends the session at the next refresh, so within the access token lifetime. An Entra outage answers `temporarily_unavailable` (503), so clients keep their refresh token; only a refusal by Entra answers `invalid_grant` |
+
+**Keys and state.** All keys are derived (HKDF, one key per purpose) from `PERISCOPE_DOWNLOAD_SIGNING_KEY`; rotating it signs everybody out. Nothing is stored except a replay cache for authorization codes, which only has to outlive a code (2 minutes). Replicas behind a load balancer share everything else through the key.
+
+**Known limits of the stateless design:**
+- **Refresh tokens can't be revoked one by one.** A refreshed token doesn't invalidate its predecessor, so a leaked refresh token stays usable until the session ends. Every use still signs in at Entra, so disabling the account, revoking its sessions or removing the app role stops it within an hour; rotating the signing key stops all.
+- **The replay cache is per replica.** With several replicas, a code could be redeemed once per replica within its 2 minutes, but only by the client holding the PKCE verifier. Run one replica or route `/oauth/token` stickily for strict single use.
+
+**Entra setup:** one app registration with a **web** redirect URI `https://<host>/oauth/callback`, the app roles, *assignment required*, and a credential: a **federated identity credential** for the Periscope service account (issuer = the cluster's OIDC issuer, subject `system:serviceaccount:<namespace>:<account>`, audience `api://AzureADTokenExchange`), or a client secret. No Application ID URI, no exposed scope, no admin consent for a custom scope.
+
+**Clients:** Claude Code (`claude mcp add --transport http periscope https://<host>/mcp`, no client ID needed) and the claude.ai connector (URL only) register themselves.
 
 ### 7.3 Authorization
 
@@ -991,7 +1022,7 @@ Measured on Node 24 with a 9-column schema (~132 bytes/row), ZSTD, 50,000-row ro
 src/
   index.ts                 CLI entry: transport selection, --env-file
   config/                  env discovery, zod schema per type
-  auth/                    PRM endpoint, JWT validation, role checks
+  auth/                    PRM endpoint, JWT validation, role checks; broker (authorization server in front of Entra)
   tools/                   the six MCP tools
   results/                 job runner, manifest, schema inference, result store (azureblob, filesystem)
     writers/               Parquet (row groups + page index), block-gzip NDJSON (+ block index),
@@ -1088,7 +1119,7 @@ What remains is verification in a real deployment (§12).
 
 **To verify at deployment**
 
-1. **Entra end to end.** Sign-in with local Claude Code and with the claude.ai connector against the configuration in §7.2: path-qualified App ID URI, fully qualified scope, v2 tokens. This includes a reconnect (community reports of `AADSTS650053`) and a scheduled cloud task. The configuration is documented by Microsoft and Anthropic, but no first-hand Claude Code success report has been found. The outcome decides between direct Entra and Plan B.
+1. **Entra end to end.** Sign-in with local Claude Code and with the claude.ai connector, in direct mode (path-qualified App ID URI on a verified domain, fully qualified scope, v2 tokens) and in broker mode, including a reconnect and a scheduled cloud task. Broker mode is tested against an Entra stand-in and the official MCP client SDK; a sign-in against a real tenant is still to be done.
 2. **Gateway behaviour** for SSE on `/mcp` and long downloads (no buffering, no compression, no total-duration cap).
 
 **Design**
@@ -1107,7 +1138,7 @@ What remains is verification in a real deployment (§12).
 - Manifest and indexes are Periscope's own format-independent JSON. Every part has an index (gzip members or row groups). Parquet indexes add per-part column statistics, and the Parquet schema shows each column's stored type (§6.4).
 - No IP allowlisting. Security rests on OAuth and signed, expiring download URLs; gateway IP restrictions are an optional operator add-on (§7.2).
 - Idle waits are short. `get_result` waits at most 10 s, and gateway idle timeouts of about 10 s are fine. Downloads only need a timeout that doesn't cap the total transfer time (§5.3, §8.2).
-- Entra ID v2 is used directly as the authorization server, with the exact configuration in §7.2. Plan B (OAuth facade) only if verification at deployment fails.
+- Users sign in with Entra ID v2. Directly (`entra`) where the host is on a verified domain; otherwise through Periscope's broker (`entra-broker`), because no Claude client can change the `resource` parameter that Entra matches against the Application ID URI (§7.2).
 - Unattended cloud agents use claude.ai connectors (scheduled tasks and API-triggered runs) and act as the user who owns them (§7.2).
 - TypeScript on Node.js 24. Parquet is written with `hyparquet-writer` in a worker thread per part and read with `hyparquet`; exact decimals are read by stripping the DECIMAL annotation from the footer metadata and formatting the raw unscaled values (§9.1).
 - Image name `ghcr.io/coreprocess/periscope-mcp`, license MIT.
