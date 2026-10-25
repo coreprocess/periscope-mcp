@@ -20,20 +20,10 @@ export interface ToolContext {
 /** Callers without a token (stdio, or http with auth disabled on localhost) hold every role. */
 export const LOCAL_CALLER: Caller = { oid: 'local', name: 'local user', roles: new Set(['*']) };
 
-export const hasRole = (caller: Caller, role: string | undefined): boolean =>
-    role === undefined || caller.roles.has('*') || caller.roles.has(role);
-
-export const canUseSource = (caller: Caller, source: SourceConfig): boolean => hasRole(caller, source.requiredRole);
-
-export const canDownload = (caller: Caller, source: SourceConfig): boolean =>
-    canUseSource(caller, source) && hasRole(caller, source.downloadRole);
-
-export const requireSource = (context: ToolContext, caller: Caller, name: string): SourceConfig => {
+/** Access is all or nothing: the app role (PERISCOPE_AUTH_REQUIRED_ROLE) opens every source. */
+export const requireSource = (context: ToolContext, name: string): SourceConfig => {
     const source = context.registry.configs().find((c) => c.name === name);
-    // Unknown and forbidden sources look the same, so names of hidden sources do not leak.
-    if (!source || !canUseSource(caller, source)) {
-        throw new PeriscopeError('unknown_source', `Unknown source '${name}'; call list_sources`);
-    }
+    if (!source) throw new PeriscopeError('unknown_source', `Unknown source '${name}'; call list_sources`);
     return source;
 };
 

@@ -7,7 +7,7 @@ import { VERSION } from '../core/version.ts';
 import { readFileWindow } from '../results/file-window.ts';
 import { decodeFileReference } from '../results/files.ts';
 import { type Caller, MAX_WAIT_MS, type ResultSnapshot } from '../results/service.ts';
-import { canDownload, canUseSource, downloadBase, LOCAL_CALLER, requireSource, type ToolContext } from './context.ts';
+import { downloadBase, LOCAL_CALLER, requireSource, type ToolContext } from './context.ts';
 
 const SCHEMA_INLINE_COLUMNS = 200;
 const DESCRIBE_TIMEOUT_MS = 45_000;
@@ -42,16 +42,14 @@ const callerOf = (context: ToolContext, ctx: ServerContext): Caller => {
     return { oid: claims.oid, name: claims.name, roles: new Set(claims.roles) };
 };
 
-const sourceOfResult = async (context: ToolContext, caller: Caller, resultId: string): Promise<ResultSnapshot> => {
+const sourceOfResult = async (context: ToolContext, resultId: string): Promise<ResultSnapshot> => {
     const snapshot = await context.service.snapshot(resultId);
-    requireSource(context, caller, snapshot.manifest.source);
+    requireSource(context, snapshot.manifest.source);
     return snapshot;
 };
 
 /** Shapes a snapshot into the `get_result` response (concept §5.3). */
 const describeResult = (context: ToolContext, caller: Caller, { manifest, state }: ResultSnapshot) => {
-    const source = context.registry.configs().find((c) => c.name === manifest.source);
-    const allowed = source ? canDownload(caller, source) : false;
     const availableRows = manifest.files.reduce((sum, part) => sum + part.rowCount, 0);
     const columns = manifest.schema.columns;
     const download: Record<string, unknown> = {
@@ -60,9 +58,8 @@ const describeResult = (context: ToolContext, caller: Caller, { manifest, state 
         fileCount: manifest.files.length,
         bytes: manifest.bytes,
         ...(manifest.blobCount !== undefined ? { blobCount: manifest.blobCount, blobBytes: manifest.blobBytes } : {}),
-        downloadAllowed: allowed,
     };
-    if (allowed && manifest.status !== 'expired') {
+    if (manifest.status !== 'expired') {
         const { base, expiresAt } = downloadBase(context, caller, manifest.resultId, manifest.expiresAt);
         download.manifestUrl = `${base}/manifest.json`;
         download.urlExpiresAt = expiresAt;
@@ -116,23 +113,19 @@ export const createMcpServer = (context: ToolContext): McpServer => {
             const caller = callerOf(context, ctx);
             try {
                 await context.registry.settle(20_000);
-                const sources = context.registry
-                    .configs()
-                    .filter((config) => canUseSource(caller, config))
-                    .map((config) => {
-                        const status = context.registry.status(config.name);
-                        const adapter = context.registry.peek(config.name);
-                        return {
-                            ...(adapter?.info() ?? { name: config.name, type: config.type }),
-                            available: status.available,
-                            ...(status.error ? { unavailableReason: status.error } : {}),
-                            downloadAllowed: canDownload(caller, config),
-                            limits: {
-                                maxQueryDuration: `${config.maxQueryDurationMs / 1000}s`,
-                                maxResultBytes: config.maxResultBytes,
-                            },
-                        };
-                    });
+                const sources = context.registry.configs().map((config) => {
+                    const status = context.registry.status(config.name);
+                    const adapter = context.registry.peek(config.name);
+                    return {
+                        ...(adapter?.info() ?? { name: config.name, type: config.type }),
+                        available: status.available,
+                        ...(status.error ? { unavailableReason: status.error } : {}),
+                        limits: {
+                            maxQueryDuration: `${config.maxQueryDurationMs / 1000}s`,
+                            maxResultBytes: config.maxResultBytes,
+                        },
+                    };
+                });
                 audit(context, caller, 'list_sources', { count: sources.length });
                 return json({ sources });
             } catch (error) {
@@ -161,7 +154,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
         async ({ source, path, filter }, ctx) => {
             const caller = callerOf(context, ctx);
             try {
-                requireSource(context, caller, source);
+                requireSource(context, source);
                 const adapter = await context.registry.get(source);
                 const result = await withTimeout(adapter.describe(path, filter), DESCRIBE_TIMEOUT_MS, 'describe');
                 audit(context, caller, 'describe', { source, path });
@@ -193,7 +186,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
         async ({ source, query, params, options }, ctx) => {
             const caller = callerOf(context, ctx);
             try {
-                requireSource(context, caller, source);
+                requireSource(context, source);
                 const adapter = await context.registry.get(source);
                 const prepared = await adapter.validate(query, params, options ?? {});
                 const resultId = await context.service.start(adapter, prepared, caller);
@@ -231,7 +224,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
         async ({ resultId, wait }, ctx) => {
             const caller = callerOf(context, ctx);
             try {
-                await sourceOfResult(context, caller, resultId);
+                await sourceOfResult(context, resultId);
                 const snapshot = await context.service.snapshot(resultId, (wait ?? 0) * 1000);
                 return json(describeResult(context, caller, snapshot));
             } catch (error) {
@@ -261,7 +254,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
         async ({ resultId, offset, limit, columns, file, lineOffset, lineLimit }, ctx) => {
             const caller = callerOf(context, ctx);
             try {
-                const { manifest } = await sourceOfResult(context, caller, resultId);
+                const { manifest } = await sourceOfResult(context, resultId);
                 if (!file) {
                     const window = await context.service.readRows(resultId, offset ?? 0, limit ?? 100, columns);
                     return json(window);
@@ -307,7 +300,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
         async ({ resultId }, ctx) => {
             const caller = callerOf(context, ctx);
             try {
-                await sourceOfResult(context, caller, resultId);
+                await sourceOfResult(context, resultId);
                 const snapshot = await context.service.cancel(resultId);
                 audit(context, caller, 'cancel_query', { resultId });
                 return json(describeResult(context, caller, snapshot));

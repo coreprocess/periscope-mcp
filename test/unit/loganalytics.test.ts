@@ -97,8 +97,6 @@ describe('log analytics source', () => {
             type: 'loganalytics',
             name: 'logs',
             description: undefined,
-            requiredRole: undefined,
-            downloadRole: undefined,
             maxQueryDurationMs: 60_000,
             maxResultBytes: 1024 ** 3,
             workspaceId: 'ws1',
