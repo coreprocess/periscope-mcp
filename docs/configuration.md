@@ -27,7 +27,7 @@ All configuration comes from environment variables. For local use, `--env-file <
 | `PERISCOPE_RESULTS_STORE` | `azureblob` (http), `filesystem` (stdio) | Where results are written |
 | `PERISCOPE_RESULTS_ACCOUNT_URL` | | Result store account for `azureblob`, accessed with the managed identity |
 | `PERISCOPE_RESULTS_CONNECTION_STRING` | | Alternative to the account URL (e.g. Azurite) |
-| `PERISCOPE_RESULTS_CONTAINER` | `results` | Result store container |
+| `PERISCOPE_RESULTS_CONTAINER` | `results` | Result store container; the deployment creates it, Periscope does not |
 | `PERISCOPE_RESULTS_DIR` | `./.periscope/results` | Result store directory for `filesystem` |
 | `PERISCOPE_RESULTS_RETENTION` | `PT24H` | How long results are kept (ISO 8601 duration) |
 | `PERISCOPE_RESULTS_PART_BYTES` | `104857600` | Target stored size of one result part; the first part closes early |

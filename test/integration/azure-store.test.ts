@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 import { gunzipSync } from 'node:zlib';
+import { BlobServiceClient } from '@azure/storage-blob';
 import { GenericContainer, type StartedTestContainer, Wait } from 'testcontainers';
 import type { SourceConfig } from '../../src/config/sources.ts';
 import { nullLoggers } from '../../src/core/logger.ts';
@@ -42,6 +43,7 @@ describe('azure blob result store', () => {
             .withWaitStrategy(Wait.forLogMessage(/Azurite Blob service successfully listens/))
             .start();
         const connectionString = `DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=${KEY};BlobEndpoint=http://${container.getHost()}:${container.getMappedPort(10000)}/devstoreaccount1;`;
+        await BlobServiceClient.fromConnectionString(connectionString).getContainerClient('results').create();
         store = new AzureBlobResultStore({ connectionString, container: 'results' });
         await store.init();
         service = new ResultService({
