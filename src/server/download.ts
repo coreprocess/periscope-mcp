@@ -2,7 +2,7 @@ import { basename } from 'node:path';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { Request, Response } from 'express';
-import { errorMessage, isPeriscopeError, type PeriscopeError } from '../core/errors.ts';
+import { isPeriscopeError, type PeriscopeError } from '../core/errors.ts';
 import type { Loggers } from '../core/logger.ts';
 import type { Signer } from '../core/signing.ts';
 import { decodeFileReference } from '../results/files.ts';
@@ -186,7 +186,6 @@ export const downloadHandler =
             }
             deps.loggers.audit.info(
                 {
-                    event: 'download',
                     resultId,
                     source: manifest.source,
                     issuedTo: payload.u,
@@ -210,7 +209,7 @@ export const downloadHandler =
             if (isPeriscopeError(error)) deny(statusOf(error), error.message);
             else {
                 deps.loggers.log.error({ err: error, resultId }, 'download failed');
-                deny(500, errorMessage(error));
+                deny(500, 'Download failed');
             }
         }
     };

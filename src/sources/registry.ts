@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import type { SourceConfig } from '../config/sources.ts';
-import { errorMessage, PeriscopeError } from '../core/errors.ts';
+import { errorMessage, PeriscopeError, summaryOf } from '../core/errors.ts';
 import type { SourceAdapter } from './adapter.ts';
 import { BlobAdapter } from './blob/adapter.ts';
 import { CosmosAdapter } from './cosmos/adapter.ts';
@@ -44,7 +44,7 @@ const RETRY_MS = 60_000;
 /**
  * Holds all configured sources. A source that fails to initialize (unreachable, bad
  * credentials) does not stop the server: it is reported as unavailable and retried
- * on next use.
+ * on next use or status report, at most once per RETRY_MS.
  */
 export class SourceRegistry {
     readonly #entries = new Map<string, Entry>();
@@ -83,15 +83,24 @@ export class SourceRegistry {
                 entry.settled = true;
             },
             (error: unknown) => {
-                entry.error = errorMessage(error);
+                entry.error = summaryOf(error);
                 entry.settled = true;
                 this.#retryAt.set(name, Date.now() + RETRY_MS);
-                this.#log.error({ source: name, error: entry.error }, 'source initialization failed');
+                this.#log.error({ source: name, error: errorMessage(error) }, 'source initialization failed');
                 throw error;
             }
         );
         entry.ready.catch(() => undefined);
         return entry.ready;
+    }
+
+    #due(name: string, entry: Entry): boolean {
+        return !entry.ready || (entry.error !== undefined && Date.now() >= (this.#retryAt.get(name) ?? 0));
+    }
+
+    /** Retries failed sources whose retry time has come, so a status report is current. */
+    retryDue(): void {
+        for (const [name, entry] of this.#entries) if (this.#due(name, entry)) this.#start(name, entry);
     }
 
     /** Initializes all sources in parallel; failures are logged, not thrown. */
@@ -120,11 +129,11 @@ export class SourceRegistry {
     async get(name: string): Promise<SourceAdapter> {
         const entry = this.#entries.get(name);
         if (!entry) throw new PeriscopeError('unknown_source', `Unknown source '${name}'`);
-        if (!entry.ready || (entry.error && Date.now() >= (this.#retryAt.get(name) ?? 0))) this.#start(name, entry);
+        if (this.#due(name, entry)) this.#start(name, entry);
         try {
             await entry.ready;
         } catch (error) {
-            throw new PeriscopeError('source_error', `Source '${name}' is unavailable: ${errorMessage(error)}`);
+            throw new PeriscopeError('source_error', `Source '${name}' is unavailable: ${summaryOf(error)}`);
         }
         return entry.adapter;
     }

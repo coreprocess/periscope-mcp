@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import type { SourceConfig } from '../../src/config/sources.ts';
+import { createLoggers } from '../../src/core/logger.ts';
 import { scalarColumn } from '../../src/results/parquet/columns.ts';
 import type {
     ExecutionContext,
@@ -129,12 +133,13 @@ describe('result jobs', () => {
             columns: [scalarColumn('n', 'int32', { sourceType: 'int' })],
             batches: (async function* () {
                 yield Array.from({ length: 6000 }, (_, i) => [i]);
-                throw new Error('connection lost');
+                throw new Error('connection lost\nRequest URI: /dbs/main/colls/claims, headers: x-ms-activity-id');
             })(),
         }));
         const { manifest } = await finish(await harness.run(adapter, 'q'));
         assert.equal(manifest.status, 'failed');
-        assert.match(manifest.error?.message ?? '', /connection lost/);
+        // the client sees the first line; the request details stay in the server log
+        assert.equal(manifest.error?.message, 'connection lost');
         assert.equal(manifest.error?.partial, true);
         assert.equal(manifest.files[0]?.rowCount, 6000);
     });
@@ -149,6 +154,30 @@ describe('result jobs', () => {
         await assert.rejects(harness.service.start(adapter, prepared, caller), /Too many concurrent queries/);
         for (const id of started) await harness.service.cancel(id);
         for (const id of started) await finish(id);
+    });
+
+    it('writes each audit event once', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'periscope-audit-'));
+        const auditLog = join(dir, 'audit.log');
+        const loggers = createLoggers({ level: 'silent', auditLog, transport: 'http' });
+        const audited = await createResultHarness({ loggers });
+        try {
+            await audited.run(new FakeAdapter(() => ({ format: 'ndjson', batches: documents(10)() })), 'q');
+            let lines: string[] = [];
+            for (let i = 0; i < 50 && lines.length < 2; i++) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                loggers.audit.flush();
+                lines = (await readFile(auditLog, 'utf8').catch(() => '')).split('\n').filter(Boolean);
+            }
+            assert.deepEqual(
+                lines.map((line) => (JSON.parse(line) as { event: string }).event),
+                ['query.start', 'query.end']
+            );
+            for (const line of lines) assert.equal(line.split('"event":').length, 2, line);
+        } finally {
+            await audited.dispose();
+            await rm(dir, { recursive: true, force: true });
+        }
     });
 
     it('rejects unknown result ids', async () => {

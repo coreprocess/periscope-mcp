@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
+import type { SourceConfig } from '../../src/config/sources.ts';
 import { parseIsoDuration } from '../../src/core/duration.ts';
+import { summaryOf, toPeriscopeError } from '../../src/core/errors.ts';
 import { compileGlob } from '../../src/core/glob.ts';
 import { isResultId, newResultId } from '../../src/core/ids.ts';
+import { nullLoggers } from '../../src/core/logger.ts';
 import { Signer } from '../../src/core/signing.ts';
 import { createTruncator, toJson } from '../../src/core/values.ts';
 import { decodeFileReference, encodeFileReference } from '../../src/results/files.ts';
 import { parseRange } from '../../src/server/download.ts';
+import type { SourceAdapter } from '../../src/sources/adapter.ts';
+import { SourceRegistry } from '../../src/sources/registry.ts';
 
 describe('durations', () => {
     it('parses ISO 8601 durations', () => {
@@ -90,5 +95,58 @@ describe('download ranges', () => {
         assert.equal(parseRange('bytes=100-', 100), 'unsatisfiable');
         assert.equal(parseRange('bytes=0-1,5-6', 100), undefined);
         assert.equal(parseRange(undefined, 100), undefined);
+    });
+});
+
+describe('errors for clients', () => {
+    it('shows the first line of a foreign error and keeps the rest as cause', () => {
+        const sdk = new Error('Resource Not Found\r\nActivityId: 1, Request URI: /apps/x/services/y, RequestStats: …');
+        assert.equal(summaryOf(sdk), 'Resource Not Found');
+        assert.equal(summaryOf(new Error('x'.repeat(400))).length, 300);
+        const wrapped = toPeriscopeError(sdk, 'source_error');
+        assert.equal(wrapped.message, 'Resource Not Found');
+        assert.equal(wrapped.cause, sdk);
+    });
+});
+
+describe('source registry', () => {
+    /** A source whose first `failures` initializations fail with a multi-line error. */
+    const flakyAdapter = (failures: number): SourceAdapter => {
+        let attempts = 0;
+        return {
+            config: { name: 'flaky', type: 'redis' } as SourceConfig,
+            init: async () => {
+                attempts++;
+                if (attempts > failures) return;
+                throw new Error('token request failed\nat credential chain, host internal.example.com');
+            },
+            info: () => ({ name: 'flaky', type: 'redis' }) as ReturnType<SourceAdapter['info']>,
+            describe: async () => ({}),
+            validate: async (query) => ({ query, params: null, options: {} }),
+            execute: async () => {
+                throw new Error('not used');
+            },
+            close: async () => undefined,
+        };
+    };
+
+    it('reports a short reason and retries a failed source once its retry time has come', async () => {
+        mock.timers.enable({ apis: ['Date'] });
+        try {
+            const registry = new SourceRegistry([{ name: 'flaky' } as SourceConfig], nullLoggers().log, () =>
+                flakyAdapter(1)
+            );
+            await registry.initAll();
+            assert.deepEqual(registry.status('flaky'), { available: false, error: 'token request failed' });
+            registry.retryDue();
+            await registry.settle(1000);
+            assert.equal(registry.status('flaky').available, false, 'no retry before the retry time');
+            mock.timers.tick(60_001);
+            registry.retryDue();
+            await registry.settle(1000);
+            assert.deepEqual(registry.status('flaky'), { available: true });
+        } finally {
+            mock.timers.reset();
+        }
     });
 });

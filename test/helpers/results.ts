@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { nullLoggers } from '../../src/core/logger.ts';
+import { type Loggers, nullLoggers } from '../../src/core/logger.ts';
 import { Signer } from '../../src/core/signing.ts';
 import { type Caller, ResultService } from '../../src/results/service.ts';
 import { FilesystemResultStore } from '../../src/results/store/filesystem.ts';
@@ -17,7 +17,9 @@ export interface ResultHarness {
     dispose(): Promise<void>;
 }
 
-export const createResultHarness = async (overrides: { partBytes?: number } = {}): Promise<ResultHarness> => {
+export const createResultHarness = async (
+    overrides: { partBytes?: number; loggers?: Loggers } = {}
+): Promise<ResultHarness> => {
     const dir = await mkdtemp(join(tmpdir(), 'periscope-results-'));
     const store = new FilesystemResultStore(dir);
     await store.init();
@@ -28,7 +30,7 @@ export const createResultHarness = async (overrides: { partBytes?: number } = {}
         partBytes: overrides.partBytes ?? 100 * 1024 * 1024,
         maxConcurrentQueriesPerUser: 8,
         read: { maxRows: 500, maxBytes: 65_536, maxValueChars: 2000 },
-        loggers: nullLoggers(),
+        loggers: overrides.loggers ?? nullLoggers(),
         signer: new Signer(randomBytes(32)),
     });
     return {

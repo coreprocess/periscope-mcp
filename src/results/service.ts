@@ -112,7 +112,7 @@ export class ResultService {
         const deadline = Date.now() + config.maxQueryDurationMs;
         const context = job.context(deadline, log);
         this.#options.loggers.audit.info(
-            { event: 'query.start', resultId, source: config.name, user: caller.oid, queryHash: state.queryHash },
+            { resultId, source: config.name, user: caller.oid, queryHash: state.queryHash },
             'query.start'
         );
         void job
@@ -121,7 +121,6 @@ export class ResultService {
                 this.#running.set(caller.oid, Math.max((this.#running.get(caller.oid) ?? 1) - 1, 0));
                 this.#options.loggers.audit.info(
                     {
-                        event: 'query.end',
                         resultId,
                         source: config.name,
                         user: caller.oid,

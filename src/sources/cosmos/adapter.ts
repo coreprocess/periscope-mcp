@@ -3,7 +3,7 @@ import { DefaultAzureCredential } from '@azure/identity';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { CosmosSourceConfig } from '../../config/sources.ts';
-import { PeriscopeError } from '../../core/errors.ts';
+import { PeriscopeError, summaryOf } from '../../core/errors.ts';
 import { SchemaInferrer } from '../../results/infer.ts';
 import type {
     DocumentStream,
@@ -75,10 +75,9 @@ export class CosmosAdapter implements SourceAdapter {
         } catch (error) {
             const reason =
                 (error as { name?: string }).name === 'AbortError' ? 'no answer within 15s' : (error as Error).message;
-            throw new PeriscopeError(
-                'source_error',
-                `Cosmos account ${new URL(c.endpoint).host} is not reachable (${reason})`
-            );
+            throw new PeriscopeError('source_error', `Cosmos account is not reachable: ${reason}`, undefined, {
+                cause: error,
+            });
         }
     }
 
@@ -165,7 +164,7 @@ export class CosmosAdapter implements SourceAdapter {
                 if (context.signal.aborted) return;
                 const started = Date.now();
                 const page = await iterator.fetchNext().catch((error: unknown) => {
-                    throw new PeriscopeError('source_error', error instanceof Error ? error.message : String(error));
+                    throw new PeriscopeError('source_error', summaryOf(error), undefined, { cause: error });
                 });
                 const ru = page.requestCharge ?? 0;
                 context.addCost({ ru });

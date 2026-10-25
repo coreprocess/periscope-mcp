@@ -296,7 +296,7 @@ export class EntraBroker {
         );
         const clientId = `${encoded}.${this.#mac('client', encoded)}`;
         const hosts = [...new Set(redirectUris.map((uri: string) => new URL(uri).host))];
-        this.#loggers.audit.info({ event: 'oauth_register', client: name, hosts }, 'oauth_register');
+        this.#loggers.audit.info({ client: name, hosts }, 'oauth_register');
         return {
             client_id: clientId,
             client_id_issued_at: issuedAt,
@@ -473,7 +473,7 @@ export class EntraBroker {
                 CODE_TTL_S
             );
             this.#loggers.audit.info(
-                { event: 'oauth_signin', user: identity.oid, userName: identity.name, roles: identity.roles },
+                { user: identity.oid, userName: identity.name, roles: identity.roles },
                 'oauth_signin'
             );
             const target = new URL(redirectUri);

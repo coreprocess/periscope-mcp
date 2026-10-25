@@ -27,8 +27,9 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: 
 
 const json = (value: unknown): CallToolResult => ({ content: [{ type: 'text', text: toJson(value) }] });
 
-const failure = (error: unknown): CallToolResult => {
+const failure = (context: ToolContext, error: unknown): CallToolResult => {
     const e = toPeriscopeError(error);
+    if (e.cause !== undefined) context.loggers.log.warn({ err: e }, 'tool failed');
     return {
         isError: true,
         content: [{ type: 'text', text: toJson({ error: { code: e.code, message: e.message } }) }],
@@ -86,7 +87,7 @@ const describeResult = (context: ToolContext, caller: Caller, { manifest, state 
 };
 
 const audit = (context: ToolContext, caller: Caller, tool: string, details: Record<string, unknown>): void => {
-    context.loggers.audit.info({ event: 'tool', tool, user: caller.oid, userName: caller.name, ...details }, 'tool');
+    context.loggers.audit.info({ tool, user: caller.oid, userName: caller.name, ...details }, 'tool');
 };
 
 export const createMcpServer = (context: ToolContext): McpServer => {
@@ -112,6 +113,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
         async (_args, ctx) => {
             const caller = callerOf(context, ctx);
             try {
+                context.registry.retryDue();
                 await context.registry.settle(20_000);
                 const sources = context.registry.configs().map((config) => {
                     const status = context.registry.status(config.name);
@@ -129,7 +131,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
                 audit(context, caller, 'list_sources', { count: sources.length });
                 return json({ sources });
             } catch (error) {
-                return failure(error);
+                return failure(context, error);
             }
         }
     );
@@ -160,7 +162,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
                 audit(context, caller, 'describe', { source, path });
                 return json(result);
             } catch (error) {
-                return failure(error);
+                return failure(context, error);
             }
         }
     );
@@ -198,7 +200,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
                 });
             } catch (error) {
                 audit(context, caller, 'query', { source, query, rejected: toPeriscopeError(error).message });
-                return failure(error);
+                return failure(context, error);
             }
         }
     );
@@ -228,7 +230,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
                 const snapshot = await context.service.snapshot(resultId, (wait ?? 0) * 1000);
                 return json(describeResult(context, caller, snapshot));
             } catch (error) {
-                return failure(error);
+                return failure(context, error);
             }
         }
     );
@@ -284,7 +286,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
                 }
                 return json(window);
             } catch (error) {
-                return failure(error);
+                return failure(context, error);
             }
         }
     );
@@ -305,7 +307,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
                 audit(context, caller, 'cancel_query', { resultId });
                 return json(describeResult(context, caller, snapshot));
             } catch (error) {
-                return failure(error);
+                return failure(context, error);
             }
         }
     );
