@@ -93,7 +93,10 @@ export class ParquetPartWriter {
             }
         }
         this.#rows += rows.length;
-        this.#outstanding.push(this.#send({ type: 'rows', columns, estimatedBytes }));
+        const reply = this.#send({ type: 'rows', columns, estimatedBytes });
+        // awaited later (back-pressure, finish); an abort in between must not become an unhandled rejection
+        reply.catch(() => undefined);
+        this.#outstanding.push(reply);
         while (this.#outstanding.length >= MAX_OUTSTANDING) await this.#outstanding.shift();
     }
 
@@ -113,6 +116,7 @@ export class ParquetPartWriter {
     }
 
     async abort(): Promise<void> {
+        this.#outstanding.splice(0);
         if (!this.#failure) this.#worker.postMessage({ type: 'abort' } satisfies ToWorker);
         this.#fail(new PeriscopeError('cancelled', 'Parquet part aborted'));
         await new Promise((resolve) => setTimeout(resolve, 50));

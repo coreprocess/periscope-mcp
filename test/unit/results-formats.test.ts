@@ -116,6 +116,22 @@ describe('parquet part', () => {
             [100_001n, 'name-100001'],
         ]);
     });
+
+    it('aborts with rows in flight without an unhandled rejection', async () => {
+        const unhandled: unknown[] = [];
+        const record = (reason: unknown) => unhandled.push(reason);
+        process.on('unhandledRejection', record);
+        try {
+            const writer = await ParquetPartWriter.open({ kind: 'filesystem', dir }, 'r9/part-0000.parquet', columns);
+            // one reply stays outstanding (back-pressure only waits from two on), then the export is cancelled
+            await writer.add(Array.from({ length: 5000 }, (_, k) => row(k)));
+            await writer.abort();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        } finally {
+            process.off('unhandledRejection', record);
+        }
+        assert.deepEqual(unhandled, []);
+    });
 });
 
 describe('ndjson part', () => {
