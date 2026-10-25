@@ -20,6 +20,7 @@ const SCAN_COUNT = 1000;
 const CHUNK = 1000;
 const DEDUPE_LIMIT = 5_000_000;
 const DESCRIBE_SAMPLE = 10_000;
+const KEEPALIVE_MS = 60_000;
 
 const optionsSchema = z.object({ values: z.boolean().optional() }).strict();
 
@@ -222,6 +223,8 @@ export class RedisAdapter implements SourceAdapter {
             ...(credentialsProvider ? { credentialsProvider } : {}),
             disableClientInfo: true,
             maintNotifications: 'disabled' as const,
+            // Azure Cache for Redis closes connections after 10 idle minutes; PING is wire-allowlisted.
+            pingInterval: KEEPALIVE_MS,
         };
         // Raw buffers and Maps: values are decoded by Periscope (UTF-8 or base64), never lossily.
         const commandOptions = {
