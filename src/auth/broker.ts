@@ -1,5 +1,6 @@
 import { createHash, createHmac, hkdfSync, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { ManagedIdentityCredential } from '@azure/identity';
 import { type AuthInfo, OAuthError, OAuthErrorCode, type OAuthTokenVerifier } from '@modelcontextprotocol/server';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import {
@@ -39,6 +40,8 @@ import type { CallerClaims } from './entra.ts';
  */
 
 const SCOPE = 'periscope';
+/** Audience Entra expects for federated credentials (workload identity, managed identity). */
+const TOKEN_EXCHANGE_SCOPE = 'api://AzureADTokenExchange/.default';
 const ENTRA_SCOPES = 'openid profile offline_access';
 const REQUEST_TTL_S = 600;
 const CODE_TTL_S = 120;
@@ -152,6 +155,7 @@ export class EntraBroker {
     readonly #clientKey: Buffer;
     readonly #usedCodes = new Map<string, number>();
     #entra: Promise<{ endpoints: EntraEndpoints; jwks: ReturnType<typeof createRemoteJWKSet> }> | undefined;
+    #assertionCredential: ManagedIdentityCredential | undefined;
 
     constructor(auth: AuthConfig, publicUrl: string, signingKey: Buffer, loggers: Loggers) {
         this.#auth = auth;
@@ -668,7 +672,7 @@ export class EntraBroker {
             body.set('client_secret', this.#auth.clientSecret);
         } else {
             body.set('client_assertion_type', 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer');
-            body.set('client_assertion', (await readFile(this.#auth.clientAssertionFile as string, 'utf8')).trim());
+            body.set('client_assertion', await this.#clientAssertion());
         }
         let response: globalThis.Response;
         try {
@@ -705,6 +709,23 @@ export class EntraBroker {
             `Entra rejected Periscope's request: ${result.error ?? response.status}`,
             500
         );
+    }
+
+    /**
+     * The token Periscope presents to Entra instead of a secret: from a managed identity
+     * (Container Apps, App Service; the app registration trusts it as federated credential),
+     * or from a file (AKS workload identity).
+     */
+    async #clientAssertion(): Promise<string> {
+        if (this.#auth.assertionIdentity) {
+            this.#assertionCredential ??= new ManagedIdentityCredential({ clientId: this.#auth.assertionIdentity });
+            const token = await this.#assertionCredential.getToken(TOKEN_EXCHANGE_SCOPE).catch((error: unknown) => {
+                this.#loggers.log.error({ error: (error as Error).message }, 'managed identity token failed');
+                throw new OAuthFailure('temporarily_unavailable', 'The managed identity is not available');
+            });
+            return token.token;
+        }
+        return (await readFile(this.#auth.clientAssertionFile as string, 'utf8')).trim();
     }
 
     async #identity(idToken: string, nonce: string | undefined): Promise<Identity> {

@@ -14,6 +14,7 @@ All configuration comes from environment variables. For local use, `--env-file <
 | `PERISCOPE_AUTH_TENANT_ID` | | Entra tenant ID (required for `entra` and `entra-broker`) |
 | `PERISCOPE_AUTH_CLIENT_ID` | | Client ID of the Periscope app registration: the expected token audience (`entra`) or the client Periscope signs in as (`entra-broker`) |
 | `PERISCOPE_AUTH_CLIENT_ASSERTION_FILE` | `AZURE_FEDERATED_TOKEN_FILE` | `entra-broker`: file with the federated token Periscope presents to Entra (AKS workload identity provides it) |
+| `PERISCOPE_AUTH_ASSERTION_IDENTITY` | | `entra-broker`: client ID of a user-assigned managed identity; its token is presented to Entra (Container Apps, App Service). The app registration trusts the identity as federated credential |
 | `PERISCOPE_AUTH_CLIENT_SECRET` | | `entra-broker`: client secret instead of a federated token |
 | `PERISCOPE_AUTH_REDIRECT_URIS` | `https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback` | `entra-broker`: HTTPS redirect URIs MCP clients may register; loopback (`http://localhost`, `127.0.0.1`, `[::1]`, any port) is always allowed |
 | `PERISCOPE_AUTH_ACCESS_TOKEN_TTL` | `PT1H` | `entra-broker`: access token lifetime; roles are re-read from Entra at every refresh |
