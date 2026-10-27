@@ -8,7 +8,7 @@
     "engines": {
         "node": ">=24.0.0"
     },
-    "packageManager": "pnpm@10.33.0",
+    "packageManager": "pnpm@10.34.9",
     "bin": {
         "periscope-mcp": "dist/index.js"
     },
@@ -29,16 +29,16 @@
         "@azure/identity": "4.14.0",
         "@azure/storage-blob": "12.34.0",
         "@modelcontextprotocol/express": "2.0.2",
-        "@modelcontextprotocol/node": "2.1.1",
-        "@modelcontextprotocol/server": "2.3.1",
+        "@modelcontextprotocol/node": "2.1.2",
+        "@modelcontextprotocol/server": "2.4.0",
         "@redis/client": "6.3.0",
         "@redis/entraid": "6.3.0",
         "express": "5.3.0",
         "hyparquet": "1.31.5",
         "hyparquet-writer": "0.17.0",
         "jose": "6.2.13",
-        "libpg-query": "18.1.5",
-        "mssql": "12.7.11",
+        "libpg-query": "18.2.1",
+        "mssql": "12.7.13",
         "oracledb": "26.0.0",
         "pg": "8.23.1",
         "pg-cursor": "2.22.1",
@@ -46,12 +46,12 @@
         "zod": "4.6.7"
     },
     "devDependencies": {
-        "@biomejs/biome": "2.6.2",
-        "@modelcontextprotocol/client": "2.3.1",
+        "@biomejs/biome": "2.6.3",
+        "@modelcontextprotocol/client": "2.4.0",
         "@types/express": "5.0.6",
         "@types/mssql": "12.3.0",
         "@types/node": "^24.19.2",
-        "@types/oracledb": "7.0.3",
+        "@types/oracledb": "26.0.0",
         "@types/pg": "8.23.1",
         "@types/pg-cursor": "2.7.2",
         "testcontainers": "12.2.1",
@@ -66,6 +66,9 @@
         ],
         "patchedDependencies": {
             "tedious@20.3.8": "patches/tedious@20.3.8.patch"
+        },
+        "overrides": {
+            "@azure/msal-node": "7.1.1"
         }
     }
 }

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24.14.1-bookworm-slim AS base
+FROM node:24.22.1-bookworm-slim AS base
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
@@ -16,7 +16,7 @@ COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN pnpm build
 
-FROM node:24.14.1-bookworm-slim
+FROM node:24.22.1-bookworm-slim
 ARG PERISCOPE_VERSION=dev
 LABEL org.opencontainers.image.source="https://github.com/coreprocess/periscope-mcp" \
       org.opencontainers.image.description="Read-only MCP server for Postgres, Oracle, SQL Server, Cosmos DB, Blob Storage, Log Analytics, Redis and KIM" \
