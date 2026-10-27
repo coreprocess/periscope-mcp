@@ -791,6 +791,7 @@ Oracle before 23ai has no session-level read-only mode, and DDL commits implicit
    - exactly one statement
    - first keyword `SELECT` or `WITH`
    - none of: `WITH FUNCTION`/`PROCEDURE`, PL/SQL blocks (`BEGIN`/`DECLARE`), `FOR UPDATE`, `NEXTVAL` (sequences advance even in a read-only transaction), `;`, database links (`@…`, unless `ALLOW_DBLINKS`)
+   - no keyword of a data- or schema-changing statement anywhere, even without `;`: `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `RENAME`, `GRANT`, `REVOKE`, `AUDIT`, `NOAUDIT`, `LOCK`, `COMMENT`, `PURGE`, `FLASHBACK`, `ANALYZE`, `ASSOCIATE`, `DISASSOCIATE`, `CALL`, `EXPLAIN`. Only unquoted words count, so the non-reserved ones still work as identifiers when quoted; the `MODEL` clause's `RULES UPDATE` is not available. Transaction control (`COMMIT`, `ROLLBACK`, `SAVEPOINT`) changes no data and is not listed; `SAVEPOINT` is a column of the data dictionary.
    - one trailing `;` or `/` is removed before the statement is sent
 2. **No `getStatementInfo()` check.** The experiments showed that node-oracledb's thin mode sends many statements to the server as a parse call, and Oracle then executes some DDL (`RENAME`, `FLASHBACK TABLE`, `PURGE`). It is therefore not used at all; the lexer is the only DDL guard.
 3. **Routine inventory** (at startup, refreshed every 10 minutes), in one of two modes:

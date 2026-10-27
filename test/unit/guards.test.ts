@@ -110,6 +110,11 @@ describe('oracle lexer and statement filter', () => {
             'SELECT DBMS_LOB.GETLENGTH(c) FROM t',
             "SELECT * FROM t AS OF TIMESTAMP SYSTIMESTAMP - INTERVAL '1' HOUR",
             'SELECT seq.CURRVAL FROM dual',
+            // statement keywords only as parts of names, quoted, in strings or comments
+            'SELECT update_date, deleted, "DELETE", savepoint FROM t',
+            "SELECT 'DELETE FROM t' FROM dual -- DROP TABLE t",
+            'SELECT /*+ MERGE(v) */ * FROM v',
+            'SELECT * FROM t MODEL DIMENSION BY (a) MEASURES (b) RULES UPSERT (b[1] = 0)',
         ]) {
             check(sql);
         }
@@ -137,6 +142,20 @@ describe('oracle lexer and statement filter', () => {
             'SELECT a\u2028b FROM dual',
             'SELECT a\u200bb FROM dual',
             'MERGE INTO t USING dual ON (1=0) WHEN NOT MATCHED THEN INSERT (a) VALUES (1)',
+            // statement keywords after a SELECT, without a ";"
+            'SELECT 1 FROM dual --x\nDELETE FROM t',
+            'SELECT 1 FROM dual --x\rDELETE FROM t',
+            'SELECT 1 FROM dual DELETE FROM t',
+            'SELECT 1 FROM dual /* x */ DROP TABLE t',
+            'WITH a AS (SELECT 1 x FROM dual) SELECT * FROM a INSERT INTO t VALUES (1)',
+            'SELECT * FROM (SELECT 1 FROM dual) TRUNCATE TABLE t',
+            'SELECT 1 FROM dual\nCREATE TABLE t (a NUMBER)',
+            'SELECT 1 FROM dual LOCK TABLE t IN EXCLUSIVE MODE',
+            'SELECT 1 FROM dual GRANT SELECT ON t TO PUBLIC',
+            "SELECT 1 FROM dual COMMENT ON TABLE t IS 'x'",
+            'SELECT 1 FROM dual EXPLAIN PLAN FOR SELECT 1 FROM dual',
+            'SELECT 1 FROM dual CALL p()',
+            'SELECT * FROM t MODEL DIMENSION BY (a) MEASURES (b) RULES UPDATE (b[1] = 0)',
             '',
         ]) {
             assert.throws(() => check(sql), QueryRejectedError, JSON.stringify(sql));

@@ -58,6 +58,8 @@ const ATTACKS = [
     'CALL dbms_output.put_line(1)',
     'SELECT 1 FROM dual; DROP TABLE orders',
     "SELECT 'a' FROM dual; DELETE FROM orders",
+    'SELECT 1 FROM dual --x\nDELETE FROM orders',
+    'SELECT * FROM orders TRUNCATE TABLE orders',
     'WITH FUNCTION f RETURN NUMBER IS PRAGMA AUTONOMOUS_TRANSACTION; BEGIN INSERT INTO audit_log VALUES (1); COMMIT; RETURN 1; END; SELECT f FROM dual',
     'SELECT * FROM orders FOR UPDATE',
     'SELECT seq.NEXTVAL FROM dual',

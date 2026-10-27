@@ -219,7 +219,7 @@ export class OracleAdapter implements SourceAdapter {
                 'Paging: OFFSET n ROWS FETCH FIRST m ROWS ONLY. Queries without a table need FROM dual.',
                 'No BOOLEAN in SQL on 19c; JSON_VALUE/JSON_QUERY/JSON_TABLE are available.',
                 'Bind variables as :name with params {"name": value}, or :1, :2 with an array.',
-                'Sequences (NEXTVAL), PL/SQL, FOR UPDATE and most DBMS_/UTL_ packages are not available.',
+                'Sequences (NEXTVAL), PL/SQL, FOR UPDATE, DML/DDL keywords and most DBMS_/UTL_ packages are not available.',
                 ...(inventory?.mode === 'conservative'
                     ? ['User-defined functions and views using them are blocked unless allowlisted (ALLOW_ROUTINES).']
                     : []),
@@ -228,7 +228,7 @@ export class OracleAdapter implements SourceAdapter {
             params: 'object { name: value } for :name binds, or array for :1, :2, …',
             readOnlyLayers: [
                 'read-only transaction (SET TRANSACTION READ ONLY, always rolled back)',
-                'strict lexer: single SELECT, no PL/SQL, no DDL, no FOR UPDATE, no NEXTVAL',
+                'strict lexer: single SELECT, no PL/SQL, no DML/DDL keywords, no FOR UPDATE, no NEXTVAL',
                 `routine inventory (${inventory?.mode ?? 'pending'}): autonomous/dynamic-SQL routines and dependents blocked`,
                 'system package allowlist (DBMS_LOB, DBMS_METADATA, DBMS_XPLAN)',
             ],

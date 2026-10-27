@@ -4,7 +4,8 @@ import { lineCommentEnd } from '../common.ts';
 /**
  * Strict Oracle lexer and statement filter (concept §7.1 B). On 19c this is the only
  * guard against DDL, because DDL commits implicitly and ends a READ ONLY transaction.
- * Anything the lexer does not recognise is rejected.
+ * Besides the first keyword, the filter rejects every data- or schema-changing statement
+ * keyword anywhere. Anything the lexer does not recognise is rejected.
  */
 
 export type TokenType = 'word' | 'quoted' | 'string' | 'number' | 'bind' | 'punct';
@@ -138,6 +139,37 @@ export const lex = (sql: string): Token[] => {
 const ALLOWED_SYSTEM_PACKAGES = new Set(['DBMS_LOB', 'DBMS_METADATA', 'DBMS_XPLAN']);
 const SYSTEM_PACKAGE = /^(DBMS|UTL|OWA|HTP|HTF|DEBUG|OUTLN)_/;
 
+/**
+ * Keywords of data- or schema-changing statements, which never belong in a reading query. The
+ * reserved ones cannot be unquoted identifiers; the others still work as identifiers when quoted.
+ * UPDATE also rules out the MODEL clause's RULES UPDATE. Transaction control (COMMIT, ROLLBACK,
+ * SAVEPOINT) changes no data and stays out: SAVEPOINT is a column of the data dictionary.
+ */
+const DENIED_WORDS = new Set([
+    'INSERT',
+    'UPDATE',
+    'DELETE',
+    'MERGE',
+    'CREATE',
+    'ALTER',
+    'DROP',
+    'TRUNCATE',
+    'RENAME',
+    'GRANT',
+    'REVOKE',
+    'AUDIT',
+    'NOAUDIT',
+    'LOCK',
+    'COMMENT',
+    'PURGE',
+    'FLASHBACK',
+    'ANALYZE',
+    'ASSOCIATE',
+    'DISASSOCIATE',
+    'CALL',
+    'EXPLAIN',
+]);
+
 export interface CheckedStatement {
     /** The SQL to send: the input with one trailing `;` or `/` removed. */
     sql: string;
@@ -182,6 +214,9 @@ export const checkReadOnlyStatement = (input: string, options: CheckOptions): Ch
         }
         if (token.type === 'word' && token.value === 'NEXTVAL') {
             throw new QueryRejectedError('Sequence NEXTVAL changes the sequence and is not allowed');
+        }
+        if (token.type === 'word' && DENIED_WORDS.has(token.value)) {
+            throw new QueryRejectedError(`'${token.value}' is not allowed in a read-only query`);
         }
         if (token.type === 'punct' && token.value === '@' && !options.allowDbLinks) {
             throw new QueryRejectedError('Database links (@) are not allowed on this source');
