@@ -331,13 +331,13 @@ read_result(resultId, file)                                # blob and KIM result
 
   ```json
   { "columns": ["id", "status", "amount"], "rows": [["a1", "open", 12.5], …],
-    "offset": 0, "nextOffset": 500, "rowCount": 1840233, "truncatedValues": 3 }
+    "offset": 0, "nextOffset": 500, "status": "succeeded", "rowCount": 1840233, "truncatedValues": 3 }
   ```
 
   - `columns` projects to a subset of columns or JSON paths (Cosmos), for narrower windows.
   - Windows are capped by `window.maxRows` and `window.maxBytes`, whichever comes first.
   - Long values are truncated to `maxValueChars`, and vectors are shown as `<vector dim=1536>`. The response counts how many values were truncated. Downloads always contain the full values.
-  - Windows can be read while the query is still running, up to `availableRows`. A window beyond that returns the current status and no rows.
+  - Windows can be read while the query is still running, up to `availableRows`. A window beyond that returns the current `status` and no rows, with `nextOffset` set to read from again; before the first rows of a Cosmos, Redis, KIM or blob result, `columns` is empty, as the schema is not inferred yet.
 - **Text files** in a `files` result are read by line range, with the same byte cap. A line index makes this fast even for large files (§6.2).
 - Windows on large results stay cheap: a window typically costs one small ranged read in the result store (§6.2).
 - **Images** in a `files` result come back as MCP image content, up to a size limit.

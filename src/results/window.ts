@@ -3,7 +3,7 @@ import { getPath } from './infer.ts';
 import { readNdjsonRows } from './ndjson.ts';
 import { readParquetRows } from './parquet/reader.ts';
 import { getJson, type ResultStore } from './store/store.ts';
-import type { BlockIndex, Manifest } from './types.ts';
+import type { BlockIndex, Manifest, ResultStatus } from './types.ts';
 
 export interface WindowLimits {
     maxRows: number;
@@ -16,6 +16,7 @@ export interface RowWindow {
     rows: unknown[][];
     offset: number;
     nextOffset: number | null;
+    status: ResultStatus;
     rowCount: number | null;
     availableRows: number;
     truncatedValues: number;
@@ -34,11 +35,9 @@ const loadIndex = (store: ResultStore, path: string): Promise<BlockIndex | undef
     return entry;
 };
 
-/** Default columns for documents: top-level fields from the inferred schema. */
-const documentColumns = (manifest: Manifest): string[] => {
-    const names = manifest.schema.columns.map((c) => c.name).filter((name) => !name.includes('.'));
-    return names.length > 0 ? names : ['value'];
-};
+/** Default columns for documents: top-level fields from the inferred schema, none before the first part. */
+const documentColumns = (manifest: Manifest): string[] =>
+    manifest.schema.columns.map((c) => c.name).filter((name) => !name.includes('.'));
 
 /**
  * Reads rows `[offset, offset + limit)` across parts, projects and truncates values,
@@ -103,6 +102,7 @@ export const readWindow = async (
         rows,
         offset,
         nextOffset,
+        status: manifest.status,
         rowCount: manifest.rowCount,
         availableRows: available,
         truncatedValues: truncator.truncated,

@@ -109,6 +109,37 @@ describe('result jobs', () => {
         assert.equal(manifest.error?.partial, true);
     });
 
+    it('tells a window of a running query apart from an empty result', async () => {
+        const gate = Promise.withResolvers<void>();
+        const adapter = new FakeAdapter(() => ({
+            format: 'ndjson',
+            batches: (async function* () {
+                await gate.promise;
+                yield* documents(3)();
+            })(),
+        }));
+        const prepared = await adapter.validate('q');
+        const resultId = await harness.service.start(adapter, prepared, testCaller);
+
+        const pending = await harness.service.readRows(resultId, 0, 10, undefined);
+        assert.ok(pending.status === 'queued' || pending.status === 'running', pending.status);
+        assert.deepEqual(pending.columns, []);
+        assert.deepEqual(pending.rows, []);
+        assert.equal(pending.nextOffset, 0);
+        assert.equal(pending.rowCount, null);
+
+        gate.resolve();
+        await finish(resultId);
+        const done = await harness.service.readRows(resultId, 0, 10, undefined);
+        assert.equal(done.status, 'succeeded');
+        assert.deepEqual(done.columns, ['i', 'text']);
+        assert.deepEqual(
+            done.rows.map((row) => row[0]),
+            [0, 1, 2]
+        );
+        assert.equal(done.nextOffset, null);
+    });
+
     it('fails with too_large when the result exceeds the size limit', async () => {
         const adapter = new FakeAdapter(() => ({ format: 'ndjson', batches: documents(100_000)() }), {
             maxResultBytes: 30_000,
