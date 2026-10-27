@@ -49,7 +49,7 @@ All configuration comes from environment variables. For local use, `--env-file <
 ```bash
 PERISCOPE_SOURCE_N=3                 # number of sources; indices run 0 … N-1
 PERISCOPE_SOURCE_<i>_NAME=…          # identifier used in tool calls: [a-z0-9_-]{1,64}, unique
-PERISCOPE_SOURCE_<i>_TYPE=…          # postgres | oracle | mssql | cosmos | blob | loganalytics | redis | kim
+PERISCOPE_SOURCE_<i>_TYPE=…          # postgres | oracle | mssql | cosmos | blob | loganalytics | redis | kim | rest
 PERISCOPE_SOURCE_<i>_<KEY>=…
 ```
 
@@ -150,6 +150,23 @@ Authentication is always Entra (`DefaultAzureCredential`) with the role *Log Ana
 | `IDENTITY_URL` | Origin of the instance hosting the management stage, where the key is exchanged; default `URL` |
 | `ALLOW_REVEAL` | `true` to allow `reveal` clauses (they disclose masked values and are audited by KIM); default `false` |
 
+### `rest`
+
+Any HTTP API. The query is one HTTP request; the response body becomes the documents of the result (concept §2, §6.1).
+
+| Key | Description |
+|---|---|
+| `BASE_URL` | Required. Base URL of the API, e.g. `https://api.example.com/v1`; request paths starting with `/` are appended to it |
+| `ALLOW` | The requests Periscope may send, as `METHOD pattern` rules separated by commas or line breaks; default `GET /**`. A pattern is a path under `BASE_URL` or an absolute URL for another origin; `*` matches within a path segment, `**` across segments, a pattern without wildcards matches exactly. `HEAD` is allowed wherever `GET` is. Allow only reads (concept §7.1 C). |
+| `ALLOW_HEADERS` | Comma-separated headers agents may set, besides `accept`, `accept-language`, `content-type`, `if-none-match` and `if-modified-since`. Method override headers are never allowed. |
+| `SCRIPT` | An ES module exporting any of `check`, `prepare` and `transform`: rejects requests, adds credentials, pages and shapes responses (concept §4.2) |
+| `VAR_<NAME>` | A value for the script, available as `context.vars.<NAME>`; every `VAR_*` key is treated as a secret |
+| `GUIDE` | Usage notes for agents (endpoints, paging, field meanings), returned by `describe` |
+| `MAX_RESPONSE_BYTES` | Largest response body read into memory; default `67108864` (64 MiB) |
+| `MAX_REQUESTS` | Most requests one query may send, pages and retries included; default `1000` |
+
+The script is trusted configuration: its own `fetch` calls, such as a sign-in, are not checked against `ALLOW`. Every request that carries the agent's query is.
+
 ## Query options and parameters
 
 | Type | `params` | `options` |
@@ -162,3 +179,4 @@ Authentication is always Entra (`DefaultAzureCredential`) with the role *Log Ana
 | `loganalytics` | not used | `timespan` (ISO 8601 duration or `start/end` interval) |
 | `redis` | not used | `values` (with `SCAN`: fetch type, TTL and value of every key) |
 | `kim` | not used; literals go into the query (`PreciseNumber(1.25)`, `Instant(…)`) | `snapshotId` (read at this snapshot) |
+| `rest` | not used; the request is the query | none |

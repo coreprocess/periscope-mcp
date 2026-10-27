@@ -128,6 +128,7 @@ Read-only does not depend on the credential, but read-only credentials are a fre
 | SQL Server | A login with `db_datareader`. Add `VIEW DEFINITION` for the function inventory and `SHOWPLAN` for `explain`. A sysadmin login, `xp_cmdshell`, OLE Automation, CLR, a `TRUSTWORTHY` database or linked servers switch the source to strict mode, where user-defined functions are blocked unless allowlisted. With Azure SQL, prefer an Entra login for the managed identity (`AUTH=azure`) or a readable secondary (`READ_INTENT=true`). |
 | KIM | A service account with an API key and only the built-in *Reader* role on the stage (or narrower assignments). Periscope's HTTP client additionally blocks every request outside its read allowlist. |
 | Redis | An ACL user with `+@read -@write -@dangerous -@scripting`, or a *Data Reader* access policy |
+| REST | A read-only API user or token where the API offers one, passed to the script as `VAR_*` secrets. Otherwise `ALLOW` is what keeps the source read-only: list only requests the API documents as reads. |
 
 `list_sources` shows each source's credential state (`read-only verified`, `unverified` or `write-capable`).
 

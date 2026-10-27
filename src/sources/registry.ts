@@ -10,6 +10,7 @@ import { MssqlAdapter } from './mssql/adapter.ts';
 import { OracleAdapter } from './oracle/adapter.ts';
 import { PostgresAdapter } from './postgres/adapter.ts';
 import { RedisAdapter } from './redis/adapter.ts';
+import { RestAdapter } from './rest/adapter.ts';
 
 export const createAdapter = (config: SourceConfig): SourceAdapter => {
     switch (config.type) {
@@ -29,6 +30,8 @@ export const createAdapter = (config: SourceConfig): SourceAdapter => {
             return new RedisAdapter(config);
         case 'kim':
             return new KimAdapter(config);
+        case 'rest':
+            return new RestAdapter(config);
     }
 };
 

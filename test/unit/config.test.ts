@@ -133,6 +133,66 @@ describe('source configuration', () => {
         );
     });
 
+    it('parses rest sources with rules, headers and script variables', () => {
+        const [source] = parseSources(
+            {
+                PERISCOPE_SOURCE_N: '1',
+                PERISCOPE_SOURCE_0_NAME: 'api',
+                PERISCOPE_SOURCE_0_TYPE: 'rest',
+                PERISCOPE_SOURCE_0_BASE_URL: 'https://api.example.com/v1/',
+                PERISCOPE_SOURCE_0_ALLOW: 'GET /items/**,\nPOST /search',
+                PERISCOPE_SOURCE_0_ALLOW_HEADERS: 'X-Api-Version',
+                PERISCOPE_SOURCE_0_VAR_USERNAME: 'reader',
+                PERISCOPE_SOURCE_0_VAR_PASSWORD: 'secret',
+            },
+            defaults
+        );
+        assert.ok(source?.type === 'rest');
+        assert.equal(source.baseUrl, 'https://api.example.com/v1');
+        assert.deepEqual(source.allow, ['GET /items/**', 'POST /search']);
+        assert.deepEqual(source.allowHeaders, ['x-api-version']);
+        assert.deepEqual(source.vars, { USERNAME: 'reader', PASSWORD: 'secret' });
+        assert.equal(source.maxRequests, 1000);
+        const [plain] = parseSources(
+            {
+                PERISCOPE_SOURCE_N: '1',
+                PERISCOPE_SOURCE_0_NAME: 'api',
+                PERISCOPE_SOURCE_0_TYPE: 'rest',
+                PERISCOPE_SOURCE_0_BASE_URL: 'https://api.example.com',
+            },
+            defaults
+        );
+        assert.deepEqual(plain?.type === 'rest' && plain.allow, ['GET /**']);
+        expectConfigError(
+            () =>
+                parseSources(
+                    {
+                        PERISCOPE_SOURCE_N: '1',
+                        PERISCOPE_SOURCE_0_NAME: 'api',
+                        PERISCOPE_SOURCE_0_TYPE: 'rest',
+                        PERISCOPE_SOURCE_0_BASE_URL: 'https://api.example.com',
+                        PERISCOPE_SOURCE_0_ALLOW: 'GET /a/../b',
+                    },
+                    defaults
+                ),
+            /PERISCOPE_SOURCE_0/
+        );
+        expectConfigError(
+            () =>
+                parseSources(
+                    {
+                        PERISCOPE_SOURCE_N: '1',
+                        PERISCOPE_SOURCE_0_NAME: 'pg',
+                        PERISCOPE_SOURCE_0_TYPE: 'postgres',
+                        PERISCOPE_SOURCE_0_URL: 'postgres://h/db',
+                        PERISCOPE_SOURCE_0_VAR_X: 'y',
+                    },
+                    defaults
+                ),
+            /PERISCOPE_SOURCE_0_VAR_X/
+        );
+    });
+
     it('rejects missing, extra and duplicate entries and unknown keys', () => {
         expectConfigError(() => parseSources({ PERISCOPE_SOURCE_N: '1' }, defaults), /PERISCOPE_SOURCE_0/);
         expectConfigError(

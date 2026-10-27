@@ -12,8 +12,9 @@ Periscope is an MCP server that gives AI agents **strictly read-only** query acc
 | Azure Log Analytics / Application Insights | KQL | Parquet |
 | Redis (standalone or cluster) | One read-only Redis command; `SCAN` as key export | NDJSON (gzip) |
 | KIM | Node or record query language | NDJSON (gzip); offloaded contents referenced in place |
+| Any HTTP API (`rest`) | One HTTP request: request line, headers, body | NDJSON (gzip); binary responses referenced, fetched again on read |
 
-Agents get the full read capability of each source. Writes cannot get through: on the API-based sources, write operations are never offered and are blocked on the wire; on the query-language sources they are filtered at several independent layers. The guarantee holds even when the configured credential could write.
+Agents get the full read capability of each source. Writes cannot get through: on the API-based sources, write operations are never offered and are blocked on the wire; on the query-language sources they are filtered at several independent layers; for HTTP APIs, only the requests the operator declares as reads are sent. The guarantee holds even when the configured credential could write.
 
 A query never returns data inline. It produces a **result** that the agent either pages through in small windows (`read_result`) or downloads over HTTP and processes with its own tools (`curl`, DuckDB, `jq`, pandas). The flow is the same for five rows or fifty million.
 
@@ -27,7 +28,7 @@ The full design is in [docs/CONCEPT.md](docs/CONCEPT.md).
 | `describe` | Metadata, drilled down step by step (schemas → tables → columns, containers → sampled schemas, prefixes, …) |
 | `query` | Starts a query and returns a `resultId` immediately; non-read-only queries are rejected synchronously |
 | `get_result` | Status, schema, row counts, window limits and one manifest URL for downloads |
-| `read_result` | One window of rows, or (blob results) lines of a text file or an image |
+| `read_result` | One window of rows, or (blob, KIM and REST results) lines of a text file or an image |
 | `cancel_query` | Stops a running query |
 
 A typical session:
@@ -106,6 +107,7 @@ The full reference is in [docs/configuration.md](docs/configuration.md).
 | SQL Server | Transaction that is always rolled back; strict T-SQL lexer (single `SELECT`, no `EXEC`, no DML/DDL, no `SELECT … INTO`, no `NEXT VALUE FOR`, no remote rowsets or locking hints); function inventory against extended procedures, OLE Automation, CLR and linked servers, with strict mode for sysadmin logins and risky server settings; optional `ApplicationIntent=ReadOnly` |
 | Redis | Static allowlist of read-only, non-blocking commands; guard on every command the client writes to the socket; optional replica reads |
 | KIM | Service account key with only the Reader role; allowlist on every HTTP request (query, collection listing, type definitions, byte reads; no drafts, sessions, agents or exports); query check (no `reveal` unless allowed, no foreign origins) |
+| REST | Operator-declared allowlist of `METHOD pattern` rules, checked on every request, page, redirect hop and file read; no method override headers or parameters, no dot segments or encoded slashes; agents cannot set credentials; optional script check. Holds as far as the allowed requests are reads for the API. |
 
 Each layer is tested on its own against real databases with write-capable credentials (see `test/integration`).
 
@@ -115,7 +117,7 @@ Each layer is tested on its own against real databases with write-capable creden
 pnpm lint          # Biome
 pnpm typecheck     # TypeScript
 pnpm test          # unit tests
-pnpm test:integration   # needs Docker: Postgres, Oracle, SQL Server, Cosmos emulator, Azurite, Redis; KIM runs against a mock
+pnpm test:integration   # needs Docker: Postgres, Oracle, SQL Server, Cosmos emulator, Azurite, Redis; KIM and REST run against mocks
 pnpm build
 ```
 

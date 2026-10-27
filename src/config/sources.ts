@@ -1,7 +1,18 @@
 import { z } from 'zod';
 import { parseIsoDuration } from '../core/duration.ts';
+import { compileRules } from '../sources/rest/guard.ts';
 
-export const SOURCE_TYPES = ['postgres', 'oracle', 'mssql', 'cosmos', 'blob', 'loganalytics', 'redis', 'kim'] as const;
+export const SOURCE_TYPES = [
+    'postgres',
+    'oracle',
+    'mssql',
+    'cosmos',
+    'blob',
+    'loganalytics',
+    'redis',
+    'kim',
+    'rest',
+] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
 
 const bool = z
@@ -132,7 +143,21 @@ const schemas = {
         IDENTITY_URL: z.string().url().optional(),
         ALLOW_REVEAL: bool.optional(),
     }),
+    rest: z.object({
+        ...common,
+        TYPE: z.literal('rest'),
+        BASE_URL: z.string().url(),
+        ALLOW: z.string().optional(),
+        ALLOW_HEADERS: list.optional(),
+        SCRIPT: z.string().optional(),
+        GUIDE: z.string().optional(),
+        MAX_RESPONSE_BYTES: positiveInt.optional(),
+        MAX_REQUESTS: positiveInt.optional(),
+    }),
 } as const;
+
+/** Types that take `VAR_<NAME>` keys: values handed to the source's script, all treated as secrets. */
+export const VAR_KEY_TYPES: ReadonlySet<SourceType> = new Set(['rest']);
 
 export const sourceKeySchemas = schemas;
 
@@ -241,6 +266,20 @@ export interface KimSourceConfig extends CommonSourceConfig {
     allowReveal: boolean;
 }
 
+export interface RestSourceConfig extends CommonSourceConfig {
+    type: 'rest';
+    /** Base URL without a trailing slash; request paths starting with `/` are appended to it. */
+    baseUrl: string;
+    /** `METHOD pattern` rules, as configured (one per entry). */
+    allow: string[];
+    allowHeaders: string[];
+    script: string | undefined;
+    guide: string | undefined;
+    maxResponseBytes: number;
+    maxRequests: number;
+    vars: Record<string, string>;
+}
+
 export type SourceConfig =
     | PostgresSourceConfig
     | OracleSourceConfig
@@ -249,7 +288,8 @@ export type SourceConfig =
     | BlobSourceConfig
     | LogAnalyticsSourceConfig
     | RedisSourceConfig
-    | KimSourceConfig;
+    | KimSourceConfig
+    | RestSourceConfig;
 
 export interface SourceDefaults {
     maxQueryDurationMs: number;
@@ -292,7 +332,8 @@ const buildOracleConnectString = (raw: Raw<'oracle'>): string => {
 export const buildSourceConfig = (
     index: number,
     raw: Raw<SourceType> & { TYPE: SourceType },
-    defaults: SourceDefaults
+    defaults: SourceDefaults,
+    vars: Record<string, string> = {}
 ): SourceConfig => {
     const base = commonFields(index, raw, defaults);
     switch (raw.TYPE) {
@@ -431,6 +472,27 @@ export const buildSourceConfig = (
                 apiKey: r.API_KEY,
                 identityUrl: origin(r.IDENTITY_URL ?? r.URL),
                 allowReveal: r.ALLOW_REVEAL ?? false,
+            };
+        }
+        case 'rest': {
+            const r = raw as Raw<'rest'>;
+            const baseUrl = r.BASE_URL.replace(/\/+$/, '');
+            const allow = (r.ALLOW ?? 'GET /**')
+                .split(/[,\n]/)
+                .map((rule) => rule.trim())
+                .filter((rule) => rule.length > 0);
+            compileRules(baseUrl, allow);
+            return {
+                ...base,
+                type: 'rest',
+                baseUrl,
+                allow,
+                allowHeaders: (r.ALLOW_HEADERS ?? []).map((name) => name.toLowerCase()),
+                script: r.SCRIPT,
+                guide: r.GUIDE,
+                maxResponseBytes: r.MAX_RESPONSE_BYTES ?? 64 * 1024 * 1024,
+                maxRequests: r.MAX_REQUESTS ?? 1000,
+                vars,
             };
         }
     }

@@ -2,11 +2,11 @@
 
 Status: draft for review · 2026-10-22
 
-Periscope is an MCP server that gives AI agents **strictly read-only** query access to data sources: Postgres, Oracle, SQL Server (including Azure SQL), Azure Cosmos DB, Azure Blob Storage, Azure Log Analytics / Application Insights, Redis and KIM. Each project deploys its own instance and configures any number of data sources through environment variables.
+Periscope is an MCP server that gives AI agents **strictly read-only** query access to data sources: Postgres, Oracle, SQL Server (including Azure SQL), Azure Cosmos DB, Azure Blob Storage, Azure Log Analytics / Application Insights, Redis, KIM and any HTTP API. Each project deploys its own instance and configures any number of data sources through environment variables.
 
-Agents get the full read capability of each source: free-form SQL, Cosmos queries, KQL, KIM queries and blob selection. All of it goes through one small set of generic tools. A query never returns data inline. It produces a **result** that the agent either pages through in windows, in context, or **downloads** over HTTP and processes with its own tools (`jq`, DuckDB, Python, …). The flow is the same for five rows or fifty million, and long-running exports come for free.
+Agents get the full read capability of each source: free-form SQL, Cosmos queries, KQL, KIM queries, HTTP requests and blob selection. All of it goes through one small set of generic tools. A query never returns data inline. It produces a **result** that the agent either pages through in windows, in context, or **downloads** over HTTP and processes with its own tools (`jq`, DuckDB, Python, …). The flow is the same for five rows or fifty million, and long-running exports come for free.
 
-Writes cannot get through. Some source types never offer write operations at all; on the others, writes are filtered out at several independent layers.
+Writes cannot get through. Some source types never offer write operations at all; on the others, writes are filtered out at several independent layers, and for HTTP APIs only the requests the operator lists as reads are sent.
 
 **Clients:** Claude Code in the IDE and on the CLI, and Claude Code on the web, including agent workflows that run unattended in the cloud. Any MCP client that supports the MCP authorization spec should work. Downloads need a client that can run `curl`.
 
@@ -47,6 +47,7 @@ Writes cannot get through. Some source types never offer write operations at all
 | `redis`        | Redis (including Azure Cache for Redis and Azure Managed Redis), standalone or cluster | Read-only Redis commands (allowlist); `SCAN` iterates to completion, optionally with values | NDJSON (gzip)                                                        | Useful for inspecting caches, sessions and job queues (lists, streams, sorted sets).                                                                                                                                                       |
 | `loganalytics` | Azure Log Analytics workspace                                                          | KQL                                                                                         | Parquet                                                              | Also covers **workspace-based Application Insights**, whose telemetry is stored in the workspace (`AppRequests`, `AppDependencies`, `AppTraces`, `AppExceptions`, `AppEvents`, `AppMetrics`, `AppPageViews`, `AppAvailabilityResults`, …). |
 | `kim`          | KIM: typed, versioned objects in collections, per stage                                | KIM node query language or record query language (one query)                                | NDJSON (gzip); offloaded contents: referenced in place, never copied | Read over KIM's HTTP API with a service account API key. Periscope pages through all matches itself, at one snapshot.                                                                                                                      |
+| `rest`         | Any HTTP API: REST, RPC, GraphQL over `POST`                                           | One HTTP request: request line, header lines, body                                          | NDJSON (gzip); binary responses: referenced, fetched again on read   | Every request must match an operator-declared allowlist of methods and paths. An optional script signs in, pages and shapes responses.                                                                                                     |
 
 Two points about Application Insights:
 - **Classic App Insights is retired.** Every App Insights resource is now workspace-based, so `loganalytics` covers it. Setting `RESOURCE_ID` to an App Insights resource scopes queries to that one app.
@@ -55,6 +56,8 @@ Two points about Application Insights:
 About KIM: a KIM stage (`<org>.<solution>.<stage>`, e.g. `acme.crm.prod`) holds typed, versioned objects in collections and is reached over KIM's HTTP API. A `kim` source reads one stage. KIM has two query languages:
 - **Node query language:** `from <collection url> [where …] [order by …] first|last N [after …] [pick …]`, `at <urls>` and `referrers of <url>`. It returns objects with their typed values.
 - **Record query language:** the same, plus `select`, `summarize … by`, `distinct` and `join`. It returns records.
+
+About `rest`: a `rest` source reads one HTTP API. The agent writes the request the way it would in an `.http` file, and gets the response body as documents. The operator decides which requests are reads (`ALLOW`), how Periscope signs in and pages (`SCRIPT`), and what agents should know about the API (`DESCRIPTION`, `GUIDE`). So one source type covers APIs that Periscope has no adapter of its own for.
 
 ---
 
@@ -68,7 +71,7 @@ claude.ai connector   ─┘                                       │   control
                                                                │   query workers ──▶ sources (read-only)   │
 agent sandbox (curl, DuckDB, …) ─────▶ /r/<signed-token> ─────▶│   data plane: downloads ◀── result store  │
                                                                └───────────────────────────────────────────┘
-                                                     Cosmos · Blob · Postgres · Oracle · SQL Server · Log Analytics · Redis · KIM
+                                                     Cosmos · Blob · Postgres · Oracle · SQL Server · Log Analytics · Redis · KIM · HTTP APIs
                                                      Result store: Periscope's own Blob container
 ```
 
@@ -119,7 +122,7 @@ Sources are configured as an indexed list:
 ```bash
 PERISCOPE_SOURCE_N=3                      # number of sources
 PERISCOPE_SOURCE_0_NAME=appdata
-PERISCOPE_SOURCE_0_TYPE=cosmos            # postgres | oracle | mssql | cosmos | blob | loganalytics | redis | kim
+PERISCOPE_SOURCE_0_TYPE=cosmos            # postgres | oracle | mssql | cosmos | blob | loganalytics | redis | kim | rest
 PERISCOPE_SOURCE_0_<KEY>=...
 PERISCOPE_SOURCE_1_NAME=files
 PERISCOPE_SOURCE_1_TYPE=blob
@@ -158,8 +161,53 @@ PERISCOPE_SOURCE_1_TYPE=blob
 | `loganalytics` | `WORKSPACE_ID`, or `RESOURCE_ID` (e.g. an App Insights resource, which scopes queries to it); `AUTH=azure`                                                  | `DEFAULT_TIMESPAN` (default `P1D`)                                                                                                                                                                                                                |
 | `redis`        | `URL` (`rediss://…`), or `HOST`/`PORT`/`USERNAME`/`PASSWORD`/`TLS`; or `HOST` + `AUTH=azure` (Entra token, for Azure Cache for Redis / Azure Managed Redis) | `DATABASE` (index, standalone only), `CLUSTER` (`true` for cluster mode; `SCAN` then fans out over all shards), `READ_FROM_REPLICAS` (send reads to replicas, which reject writes), `MAX_OPS_PER_SEC` (command budget, like the Cosmos RU budget) |
 | `kim`          | `URL` (origin of the KIM environment), `STAGE` (`org.solution.stage`, e.g. `acme.crm.prod`, or the stage id), `API_KEY` (a service account key, `kim_sk_…`) | `IDENTITY_URL` (origin of the instance that hosts the management stage, where the key is exchanged; default `URL`), `ALLOW_REVEAL` (allow `reveal` in queries; default `false`)                                                                   |
+| `rest`         | `BASE_URL` (request paths starting with `/` are appended to it)                                                                                             | `ALLOW`, `ALLOW_HEADERS`, `SCRIPT`, `VAR_<NAME>`, `GUIDE`, `MAX_RESPONSE_BYTES`, `MAX_REQUESTS` (see below)                                                                                                                                       |
 
 `AUTH=azure` uses `DefaultAzureCredential`. In Azure that is Periscope's managed identity; locally it is `az login`.
+
+**`rest` sources** are configured with these keys:
+- **`ALLOW`:** the requests Periscope may send, as `METHOD pattern` rules separated by commas or line breaks (default `GET /**`). A pattern is a path under `BASE_URL` (`GET /items/**`) or an absolute URL for another origin (`GET https://files.example.com/**`). `*` matches within one path segment and `**` across segments; a pattern without wildcards matches exactly. `HEAD` is allowed wherever `GET` is. Rules hold no query string.
+- **`ALLOW_HEADERS`:** headers agents may set, besides `accept`, `accept-language`, `content-type`, `if-none-match` and `if-modified-since`.
+- **`SCRIPT`:** an ES module with any of three exports, all optional:
+  - `check(request, context)` runs for every request and rejects it by throwing.
+  - `prepare(request, context)` runs before every request is sent. It adds credentials and headers, changes the request in place or returns a new one.
+  - `transform(response, context)` gets every response as a standard fetch `Response`. It returns the documents, or `{ documents, next }`, where `next` is the request to send after it (the next page, or the same request again after signing in anew).
+
+  A request is `{ method, url, headers, body }`, with lower-case header names and a string body. Every hook gets `context.vars`, `context.fetch` and `context.signal`. `transform` also gets `context.request`, the request the response answers before `prepare`, and `context.file(url)`, which returns a file link for a `GET` URL (§6.1). The module scope is the script's memory: a token kept there lasts until the process restarts and is separate per replica.
+- **`VAR_<NAME>`:** values for the script, as `context.vars.<NAME>`: sign-in URLs, user names, passwords, client secrets. All are treated as secrets.
+- **`GUIDE`:** usage notes for agents (endpoints, paging, what fields mean), returned by `describe`. `DESCRIPTION` stays the short summary in `list_sources`.
+- **`MAX_RESPONSE_BYTES`:** the largest response body Periscope reads into memory (default 64 MiB).
+- **`MAX_REQUESTS`:** the most requests one query may send; pages and retries count, redirect hops do not (default 1000).
+
+A script that signs in with a password grant, keeps the token and pages through `{ results, page, pages }`:
+
+```js
+let token;
+
+export async function prepare(request, { vars, fetch }) {
+    if (!token || Date.now() > token.renewAt) {
+        const response = await fetch(vars.TOKEN_URL, {
+            method: 'POST',
+            headers: { authorization: `Basic ${btoa(`${vars.CLIENT_ID}:${vars.CLIENT_SECRET}`)}` },
+            body: new URLSearchParams({ grant_type: 'password', username: vars.USERNAME, password: vars.PASSWORD }),
+        });
+        const body = await response.json();
+        token = { value: body.access_token, renewAt: Date.now() + body.expires_in * 500 };
+    }
+    request.headers.authorization = `Bearer ${token.value}`;
+}
+
+export async function transform(response, { request }) {
+    if (response.status === 401) {
+        token = undefined;
+        return { next: request };
+    }
+    const body = await response.json();
+    const url = new URL(request.url);
+    url.searchParams.set('page', String(body.page + 1));
+    return { documents: body.results, next: body.page < body.pages ? { ...request, url: url.href } : undefined };
+}
+```
 
 ### 4.3 Example (Terraform, Azure Container App)
 
@@ -234,6 +282,7 @@ All tools carry the MCP annotations `readOnlyHint: true` and `destructiveHint: f
 | `loganalytics` | (none) lists tables with data in the default timespan and their row counts → `Table` returns `getschema`                                                                                                                                                                                                                                                                                         |
 | `redis`        | (none) returns a server summary (version, mode, keys per database, used memory) and a **key-prefix overview** from a sampled `SCAN`: prefixes split at `:`, with estimated counts and types → `prefix:` lists sub-prefixes and sample keys → an exact key returns type, TTL, size (`STRLEN`/`HLEN`/`LLEN`/`SCARD`/`ZCARD`/`XLEN`), encoding, memory usage, and for streams their consumer groups |
 | `kim`          | (none) lists the stage's collections → `collection` (dotted alias or id) lists its sub-collections and the types of its objects with object counts (a census query `summarize n = count() by app = $::descriptor`, type titles from the type definitions) → `collection/type` lists the type's properties with shape names, args, and the required, title, sensitive and secret flags            |
+| `rest`         | (none) returns the base URL, the allowed requests, the headers agents may set, and the operator's `GUIDE`                                                                                                                                                                                                                                                                                        |
 
 ### 5.2 `query`
 
@@ -241,8 +290,8 @@ All tools carry the MCP annotations `readOnlyHint: true` and `destructiveHint: f
 query(source, query, params?, options?) → { resultId }
 ```
 
-- **`query`** is SQL (Postgres, Oracle), T-SQL (SQL Server), Cosmos SQL or KQL. For `blob` sources it is a glob or prefix relative to the container (`invoices/2026/**/*.pdf`). For `kim` sources it is one query text in either KIM query language (§2).
-- **`params`** are bind parameters: `$1` for Postgres, `:name` for Oracle, `@name` for SQL Server and Cosmos (an object of names to values). KIM has no bind parameters: literals are written into the query, with typed constructors such as `PreciseNumber(1.25)` or `Instant(2026-01-01T00:00:00Z)`.
+- **`query`** is SQL (Postgres, Oracle), T-SQL (SQL Server), Cosmos SQL or KQL. For `blob` sources it is a glob or prefix relative to the container (`invoices/2026/**/*.pdf`). For `kim` sources it is one query text in either KIM query language (§2). For `rest` sources it is one HTTP request: `METHOD URL` on the first line, optional `name: value` header lines, then a blank line and the body; a URL starting with `/` is appended to `BASE_URL`.
+- **`params`** are bind parameters: `$1` for Postgres, `:name` for Oracle, `@name` for SQL Server and Cosmos (an object of names to values). KIM has no bind parameters: literals are written into the query, with typed constructors such as `PreciseNumber(1.25)` or `Instant(2026-01-01T00:00:00Z)`. REST has none either: the request is the query.
 - **`options`** depend on the type:
 
 | Type                          | Options                                                                                                       |
@@ -253,6 +302,7 @@ query(source, query, params?, options?) → { resultId }
 | `loganalytics`                | `timespan` (ISO 8601 duration or interval)                                                                    |
 | `redis`                       | `values` (with `SCAN`: also fetch each key's type, TTL and value, i.e. a key export)                          |
 | `kim`                         | `snapshotId` (read at this KIM snapshot instead of the latest)                                                |
+| `rest`                        | (none)                                                                                                        |
 
 **Synchronous checks before a result is created:** argument validation, permission checks, and the full read-only guard (§7.1), including parse errors. A rejected query fails immediately with a reason and never gets a `resultId`. Only execution errors (timeout, database error, throttling) show up later in `get_result`.
 
@@ -300,21 +350,21 @@ get_result(resultId, wait?) → metadata
 }
 ```
 
-| Field                                  | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`                               | `queued`, `running`, `succeeded`, `failed`, `cancelled` or `expired`                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `rowCount`                             | Total rows, known once `succeeded`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `availableRows`                        | Rows already materialized. They can be read with `read_result` while the query is still running.                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `schema`                               | **SQL and KQL:** exact column names and types from the source. **Cosmos, KIM and blob listings:** inferred while materializing, with field paths, types and `presence` (share of rows that have the field). `sourceType` is the native type; `type` is the normalized type. Parquet results also carry `parquetType`, the exact stored type. For very wide schemas (e.g. heterogeneous Cosmos documents), only the first 200 columns are inline (`schemaTruncated: true`); the full schema is in the manifest. |
-| `window`                               | Limits for `read_result`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `download.manifestUrl`                 | **The single entry point for downloads.** The manifest (§6.4) lists every file with its row range, size and checksum, plus the block indexes. All its paths are relative to the manifest URL, so every other URL is derived from this one.                                                                                                                                                                                                                                                                     |
-| `download.format`                      | Fixed per source type (§6.1): `parquet` for Postgres, Oracle, SQL Server and Log Analytics; `ndjson` with `compression: gzip` for Cosmos, Redis, KIM and blob listings. Files are served exactly as stored (§6.4), so `.ndjson.gz` arrives compressed and is read with `zcat`, DuckDB `read_json` or pandas.                                                                                                                                                                                                   |
-| `download.fileCount`, `download.bytes` | Number of files and total download size, exactly as stored and transferred. This lets the agent decide whether to download at all without fetching the manifest.                                                                                                                                                                                                                                                                                                                                               |
-| `urlExpiresAt`                         | The manifest URL, and every URL derived from it, is short-lived. Calling `get_result` again issues a fresh manifest URL until the result expires. Only the base changes; relative paths stay the same.                                                                                                                                                                                                                                                                                                         |
-| `stats.sourceCost`                     | Source-specific cost: Cosmos RUs, KIM queries sent, rows scanned where available                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `error`                                | For `failed`: a code, a message, and whether partial data is available                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Field                                  | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`                               | `queued`, `running`, `succeeded`, `failed`, `cancelled` or `expired`                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `rowCount`                             | Total rows, known once `succeeded`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `availableRows`                        | Rows already materialized. They can be read with `read_result` while the query is still running.                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `schema`                               | **SQL and KQL:** exact column names and types from the source. **Cosmos, KIM, REST and blob listings:** inferred while materializing, with field paths, types and `presence` (share of rows that have the field). `sourceType` is the native type; `type` is the normalized type. Parquet results also carry `parquetType`, the exact stored type. For very wide schemas (e.g. heterogeneous Cosmos documents), only the first 200 columns are inline (`schemaTruncated: true`); the full schema is in the manifest. |
+| `window`                               | Limits for `read_result`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `download.manifestUrl`                 | **The single entry point for downloads.** The manifest (§6.4) lists every file with its row range, size and checksum, plus the block indexes. All its paths are relative to the manifest URL, so every other URL is derived from this one.                                                                                                                                                                                                                                                                           |
+| `download.format`                      | Fixed per source type (§6.1): `parquet` for Postgres, Oracle, SQL Server and Log Analytics; `ndjson` with `compression: gzip` for Cosmos, Redis, KIM, REST and blob listings. Files are served exactly as stored (§6.4), so `.ndjson.gz` arrives compressed and is read with `zcat`, DuckDB `read_json` or pandas.                                                                                                                                                                                                   |
+| `download.fileCount`, `download.bytes` | Number of files and total download size, exactly as stored and transferred. This lets the agent decide whether to download at all without fetching the manifest.                                                                                                                                                                                                                                                                                                                                                     |
+| `urlExpiresAt`                         | The manifest URL, and every URL derived from it, is short-lived. Calling `get_result` again issues a fresh manifest URL until the result expires. Only the base changes; relative paths stay the same.                                                                                                                                                                                                                                                                                                               |
+| `stats.sourceCost`                     | Source-specific cost: Cosmos RUs, KIM queries and REST requests sent, rows scanned where available                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `error`                                | For `failed`: a code, a message, and whether partial data is available                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
-For blob and KIM results, `download` also contains `blobCount` and `blobBytes`: the number and total size of the referenced blobs or offloaded KIM contents.
+For blob, KIM and REST results, `download` also contains `blobCount` and `blobBytes`: the number and total size of the referenced blobs, offloaded KIM contents or linked REST responses (as far as the API reported their size).
 
 
 While `running`, the response contains `progress` (`rows`, `bytes`, `files`, elapsed time) and all metadata known so far. The manifest URL is already available. It lists the files completed so far, so downloads can start while the query is still running.
@@ -323,8 +373,8 @@ While `running`, the response contains `progress` (`rows`, `bytes`, `files`, ela
 
 ```
 read_result(resultId, offset?, limit?, columns?)           # rows of any result
-read_result(resultId, file, lineOffset?, lineLimit?)       # blob and KIM results: a referenced text file
-read_result(resultId, file)                                # blob and KIM results: a referenced image
+read_result(resultId, file, lineOffset?, lineLimit?)       # blob, KIM and REST results: a referenced text file
+read_result(resultId, file)                                # blob, KIM and REST results: a referenced image
 ```
 
 - **Rows:** returns columns plus row arrays, which uses far fewer tokens than an array of objects:
@@ -378,7 +428,7 @@ results/<resultId>/
   index/files/….json           line index for referenced text blobs, built on first use (§6.2)
 ```
 
-Everything except `state.json` is downloadable through the manifest URL. Blob results also expose the referenced source blobs under the virtual path `files/…` (§6.4), and KIM results their offloaded contents. They are served from the source and never copied. Indexes live under `index/`, so they can never collide with blob names under `files/`.
+Everything except `state.json` is downloadable through the manifest URL. Blob results also expose the referenced source blobs under the virtual path `files/…` (§6.4), KIM results their offloaded contents, and REST results their binary responses. They are served from the source and never copied. Indexes live under `index/`, so they can never collide with blob names under `files/`.
 - **Parts** are written as the query streams. Each part is a **self-contained file**, closed at about `PERISCOPE_RESULTS_PART_BYTES` (stored size) and recorded in the manifest with its row range, size and checksum. That's what makes reading during execution, paging by offset and parallel downloads possible. Most results consist of a single part.
 - **The first part closes early**, after a few thousand rows or a few seconds, whichever comes first. The first rows of a long-running query are then readable almost immediately. Later parts close by size only, so slow queries don't produce many tiny parts.
 - **Formats: exactly one per source type, with no format option.**
@@ -391,6 +441,7 @@ Everything except `state.json` is downloadable through the manifest URL. Blob re
   | `blob` (contents)                             | **Referenced in place** in the source, never copied                  | Served unchanged from the source (see blob results below).                                                                                                                                                                                                             |
   | `redis`                                       | **NDJSON**, block-compressed gzip                                    | Redis values have different shapes per type (strings, hashes, lists, sets, sorted sets, streams, JSON).                                                                                                                                                                |
   | `kim`                                         | **NDJSON**, block-compressed gzip, one document per record or object | KIM sends no column types before the rows, withheld fields are left out of records, and aggregates can mix numbers and decimal strings in one column. Offloaded contents are referenced in place (see KIM results below).                                              |
+  | `rest`                                        | **NDJSON**, block-compressed gzip, one document per JSON element     | API responses are JSON of any shape. Binary responses are referenced and fetched again on read (see REST results below).                                                                                                                                               |
 
   `read_result` always returns the compact columns-plus-rows format, regardless of the stored format.
 - **Parquet type mapping** (tabular sources). The mapping is defined once per source type and documented:
@@ -434,12 +485,16 @@ Everything except `state.json` is downloadable through the manifest URL. Blob re
     - **Node queries without a window:** Periscope inserts `first <n> after (<anchors>, "<position>")`. The anchors are the last object's order keys, spelled as constructors in their own comparison domain (`Instant(2026-01-21T20:00:00Z)`, `PreciseNumber(1500.00)`); a bare string would compare as text. The order-key fields are added to `pick`, so their values are in the answer. Only plain `$.field` keys and `$::position` can be anchored; other orderings need a written window or a record query.
     - **A written window** (`first`/`last N`) and an `at` query are sent once, as written.
     - **Result budget.** When KIM answers `resultBudget`, the page size halves until the page fits.
+- **REST results:**
+  - **Without a `transform`:** a JSON array becomes one document per element and any other JSON value one document. A text response becomes `{ text }`, a `HEAD` response `{ status, contentType, size }`. Binary content of a `GET` becomes `{ contentType, size, file }`; binary content of another method can't be fetched again and fails the query. A response outside 2xx fails the query with its status and the start of its body.
+  - **With a `transform`:** the documents it returns, page by page. Its `next` request is sent after it, until it returns none or `MAX_REQUESTS` is reached.
+  - **Binary responses are referenced, not copied.** A link holds the URL, signed and bound to the result like a blob link. Reading it fetches the URL again through the wire guard and `prepare` (§7.1 C), with a Range request; if the API ignores Range, Periscope skips to the requested bytes itself. A link is not pinned: the content may have changed since the query. `transform` links any allowed `GET` URL with `context.file(url)`, for instance the download URL in a file's metadata.
 - **Consistency:**
   - **Postgres:** the query runs in a single `REPEATABLE READ READ ONLY` transaction, so the result is one snapshot.
   - **Oracle:** `SET TRANSACTION READ ONLY` gives read consistency across the whole query. Very long queries risk ORA-01555 (snapshot too old).
   - **SQL Server:** the query runs in a `SNAPSHOT` transaction when the database allows snapshot isolation, so the result is one snapshot; otherwise in `READ COMMITTED`. The transaction is always rolled back.
   - **KIM:** every page is read at one snapshot, pinned from the first answer (`clock.snapshot.to`, sent as `snapshotId` with every following page) or given with the `snapshotId` option, so the result is one snapshot.
-  - **Cosmos, Log Analytics and Redis** have no cross-page snapshot. Results reflect the data at the time each page was read.
+  - **Cosmos, Log Analytics, Redis and REST** have no cross-page snapshot. Results reflect the data at the time each page was read.
 
 ### 6.2 Physical layout and random access
 
@@ -488,8 +543,9 @@ Replicas cache block indexes and Parquet footers in a small in-memory LRU, so co
   - **Blob:** listing via paged list or tag search. Contents are not copied (§6.1).
   - **Redis:** a single command, or a cursor loop for `SCAN` (per shard in cluster mode), throttled to `MAX_OPS_PER_SEC`. Values are fetched in pipelined batches. Large collections are fetched in chunks.
   - **KIM:** one HTTP query per page of at most 500 entries, at one pinned snapshot (§6.1); each request's timeout is the time left until `MAX_QUERY_DURATION`.
+  - **REST:** one request at a time, the next one only after `transform` returned it, up to `MAX_REQUESTS`. Every response body is capped at `MAX_RESPONSE_BYTES`. Redirects are followed by Periscope itself, at most five hops, each one guarded (§7.1 C).
 - **Limits:** concurrent queries per user, result size and duration per source, and a total size limit for the result store.
-- **Cancellation:** `cancel_query` stops the job (`pg_cancel_backend` on Periscope's own session, `connection.break()` for Oracle, `request.cancel()` (a TDS attention) for SQL Server, aborting the Cosmos and Log Analytics iterators and the running KIM request).
+- **Cancellation:** `cancel_query` stops the job (`pg_cancel_backend` on Periscope's own session, `connection.break()` for Oracle, `request.cancel()` (a TDS attention) for SQL Server, aborting the Cosmos and Log Analytics iterators and the running KIM or REST request).
 
 ### 6.4 Downloads
 
@@ -499,12 +555,12 @@ Replicas cache block indexes and Parquet footers in a small in-memory LRU, so co
 - **Served as stored.** Periscope streams the stored bytes from the result store with `Content-Length`, `ETag` and **Range** support. Interrupted downloads resume (`curl -C -`), and DuckDB can read Parquet parts remotely.
 - **No transport re-encoding.** No file is ever compressed or decompressed in transit. Responses don't depend on `Accept-Encoding`, so agents don't need `curl --compressed`, and byte ranges always refer to the stored file. The file extension describes exactly what lands on disk: `.ndjson.gz` is gzip, while `.json` and `.parquet` files are stored and served as they are. Headers:
 
-  | File                            | `Content-Type`                   | Notes                                                                                                                                                                                                                                                                                                                  |
-  | ------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `*.ndjson.gz`                   | `application/gzip`               | **No** `Content-Encoding: gzip`. Otherwise clients and gateways would transparently decompress, and ranges would refer to the wrong representation.                                                                                                                                                                    |
-  | `*.parquet`                     | `application/vnd.apache.parquet` |                                                                                                                                                                                                                                                                                                                        |
-  | `files/…`                       | The blob's original content type | **Proxied from the source storage account**, not from the result store. Read-only GET/HEAD with Range, pinned by `If-Match: <etag>` or by version ID or snapshot. Returns `412`/`404` if the blob changed or was deleted after the query. For KIM results, proxied from KIM's Bytes API, pinned to the object version. |
-  | `manifest.json`, `index/….json` | `application/json`               | Plain, uncompressed JSON (small), so `jq` reads it directly                                                                                                                                                                                                                                                            |
+  | File                            | `Content-Type`                   | Notes                                                                                                                                                                                                                                                                                                                                                                                                   |
+  | ------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `*.ndjson.gz`                   | `application/gzip`               | **No** `Content-Encoding: gzip`. Otherwise clients and gateways would transparently decompress, and ranges would refer to the wrong representation.                                                                                                                                                                                                                                                     |
+  | `*.parquet`                     | `application/vnd.apache.parquet` |                                                                                                                                                                                                                                                                                                                                                                                                         |
+  | `files/…`                       | The blob's original content type | **Proxied from the source storage account**, not from the result store. Read-only GET/HEAD with Range, pinned by `If-Match: <etag>` or by version ID or snapshot. Returns `412`/`404` if the blob changed or was deleted after the query. For KIM results, proxied from KIM's Bytes API, pinned to the object version. For REST results, fetched again from the API through the wire guard; not pinned. |
+  | `manifest.json`, `index/….json` | `application/json`               | Plain, uncompressed JSON (small), so `jq` reads it directly                                                                                                                                                                                                                                                                                                                                             |
 
   All files carry `Cache-Control: private, no-store, no-transform`, so intermediaries neither cache nor re-encode them.
 - **Why a proxy and not SAS:** the result store stays private, every download is audited, and there's no SAS generation at all.
@@ -666,7 +722,7 @@ Text files (`unit: lines`, `index/files/<name>.json`): the same envelope, with `
 
 **Scope of the guarantee:** Periscope never writes to a **source**. It does write results to its **own result store**. That happens through a separate client with its own permission scope (§7.4), which can't reach sources, while sources can't be configured to point at the store.
 
-The source types fall into two categories.
+The source types fall into three categories.
 
 #### A. Writes are never offered: Cosmos DB, Blob Storage, Log Analytics, KIM
 
@@ -795,10 +851,27 @@ Redis has no read-only session mode on a primary, and some commands that look li
 3. **Replicas (optional, engine-side).** With `READ_FROM_REPLICAS`, reads go to replicas. Redis replicas reject writes themselves (`READONLY You can't write against a read only replica`).
 4. **Credential (optional extra).** An ACL user restricted to `+@read -@write -@dangerous -@scripting`, or a service access policy such as _Data Reader_ where the managed Redis offering provides one.
 
+#### C. Operator-declared reads: REST
+
+HTTP methods say whether a request writes only by convention, and an API may offer anything on any path. So no list of reads is built into Periscope: the operator declares, per source, which requests are reads, and Periscope sends nothing else.
+1. **Request allowlist.** Every request must match an `ALLOW` rule (`METHOD pattern`, §4.2) in method, origin and path. `HEAD` counts as `GET`. A URL Periscope does not fully understand is rejected rather than interpreted, because a server may resolve it to another path than the one checked:
+   - dot segments and empty segments, also percent-encoded (`%2e`)
+   - encoded slashes and backslashes (`%2f`, `%5c`), backslashes, spaces and control characters
+   - user info and fragments, schemes other than `http` and `https`
+2. **No method override.** The headers `X-HTTP-Method-Override`, `X-HTTP-Method` and `X-Method-Override` and query parameters of these names or `_method` are always rejected: a server may treat a `GET` that carries one as a `DELETE`.
+3. **Agent input is limited.** An agent may set only the headers in `ALLOW_HEADERS` and a few harmless defaults, never credentials, and a `GET` or `HEAD` has no body. Periscope adds credentials through the script.
+4. **Script check (optional).** The script's `check` sees every request and rejects one by throwing, for rules a path pattern cannot express (a query parameter's value, a body field).
+5. **Wire guard.** All of this is checked synchronously in `query`, and again for every request that leaves the process: after `prepare` changed it, for every `next` request of `transform`, for every redirect hop and for every file read. Periscope follows redirects itself; for each hop `prepare` runs again for the new URL, so credentials reach another origin only if the script adds them there.
+
+**The script is configuration.** The operator writes and deploys it, like the allowlist. Its own `fetch` calls (sign-in, token refresh) are not checked: they go to identity endpoints Periscope cannot know. Every request that carries agent input is checked.
+
+**What the guarantee rests on.** It holds as far as the allowed requests are reads for the API. Allow only methods and paths the API documents as reads, and `POST` only for a known read endpoint (a search, a GraphQL query endpoint that takes no mutations). The credential is reported as `unverified`.
+
 #### Known limits
 
 - **Database-owned policy functions.** VPD and FGA handlers run on SELECT and are owned by the database. Periscope cannot control them, and they are not a path for agent-triggered writes.
 - **Read-only does not mean no load.** Large queries put real load on sources. The mitigations are duration and size limits per source, a Cosmos RU budget, concurrency limits, and cancellation. Operators should take care when connecting production sources (§7.3).
+- **APIs that write on a read.** An HTTP API that changes data on a `GET` defeats a `rest` allowlist that covers the path. Such paths must stay out of `ALLOW`.
 
 ### 7.2 Authentication
 
@@ -906,17 +979,18 @@ Periscope is the **authorization server** towards MCP clients and an ordinary **
 
 Periscope uses **its own user-assigned managed identity** and its own secrets. Don't reuse the application's identity, which typically holds write roles. Users are authorized at Periscope, and the data sources only trust Periscope (trusted subsystem). Read-only roles should be assigned where it costs nothing, as extra defense:
 
-| Target           | Recommended credential                                                                                                                                                                                                                                   | Required for the guarantee?                           |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| Cosmos DB        | Managed identity, _Cosmos DB Built-in Data Reader_ (`…0001`). Alternatively a connection string.                                                                                                                                                         | No (wire guard)                                       |
-| Blob (source)    | Managed identity, _Storage Blob Data Reader_. Alternatively a connection string or SAS.                                                                                                                                                                  | No (wire guard)                                       |
-| Log Analytics    | Managed identity, _Log Analytics Reader_ on the workspace                                                                                                                                                                                                | No (query API is read-only)                           |
-| Redis            | A read-only ACL user (`+@read -@write -@dangerous -@scripting`) or a _Data Reader_-style access policy where available; otherwise the existing credential. Entra auth with the managed identity where supported.                                         | No (command allowlist, client guard)                  |
-| KIM              | A service account API key with only the built-in _Reader_ role. Reported as `unverified`, because a Reader cannot inspect its own assignments.                                                                                                           | No (wire allowlist, query check)                      |
-| Postgres         | A read-only role (e.g. `pg_read_all_data`), Entra auth for the managed identity, or an existing credential                                                                                                                                               | No (layers B1–B3)                                     |
-| Oracle           | A read-only user where possible, otherwise a shared credential                                                                                                                                                                                           | No (layers B1–B6)                                     |
-| SQL Server       | A login with `db_datareader` (plus `VIEW DEFINITION` for the routine inventory and `SHOWPLAN` for `explain`), Entra auth for the managed identity, otherwise a shared credential. Read-only at the server only with a read-only replica (`READ_INTENT`). | No (layers B1–B4)                                     |
-| **Result store** | Managed identity, _Storage Blob Data Contributor_ scoped to the result container only                                                                                                                                                                    | n/a. This is Periscope's own storage, never a source. |
+| Target           | Recommended credential                                                                                                                                                                                                                                   | Required for the guarantee?                                                   |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Cosmos DB        | Managed identity, _Cosmos DB Built-in Data Reader_ (`…0001`). Alternatively a connection string.                                                                                                                                                         | No (wire guard)                                                               |
+| Blob (source)    | Managed identity, _Storage Blob Data Reader_. Alternatively a connection string or SAS.                                                                                                                                                                  | No (wire guard)                                                               |
+| Log Analytics    | Managed identity, _Log Analytics Reader_ on the workspace                                                                                                                                                                                                | No (query API is read-only)                                                   |
+| Redis            | A read-only ACL user (`+@read -@write -@dangerous -@scripting`) or a _Data Reader_-style access policy where available; otherwise the existing credential. Entra auth with the managed identity where supported.                                         | No (command allowlist, client guard)                                          |
+| KIM              | A service account API key with only the built-in _Reader_ role. Reported as `unverified`, because a Reader cannot inspect its own assignments.                                                                                                           | No (wire allowlist, query check)                                              |
+| REST             | A read-only API user or token where the API offers one; otherwise the existing credential, as `VAR_*` secrets for the script. Reported as `unverified`.                                                                                                  | No (request allowlist, wire guard), as long as the allowed requests are reads |
+| Postgres         | A read-only role (e.g. `pg_read_all_data`), Entra auth for the managed identity, or an existing credential                                                                                                                                               | No (layers B1–B3)                                                             |
+| Oracle           | A read-only user where possible, otherwise a shared credential                                                                                                                                                                                           | No (layers B1–B6)                                                             |
+| SQL Server       | A login with `db_datareader` (plus `VIEW DEFINITION` for the routine inventory and `SHOWPLAN` for `explain`), Entra auth for the managed identity, otherwise a shared credential. Read-only at the server only with a read-only replica (`READ_INTENT`). | No (layers B1–B4)                                                             |
+| **Result store** | Managed identity, _Storage Blob Data Contributor_ scoped to the result container only                                                                                                                                                                    | n/a. This is Periscope's own storage, never a source.                         |
 
 `list_sources` reports the credential state for information only. No source is refused because its credential can write.
 
@@ -1038,6 +1112,8 @@ src/
     redis/                 adapter, describe (prefix sampling), command parser + allowlist, client guard
     kim/                   adapter (with describe and file reads), client (wire allowlist, key exchange),
                            guard (lexer, query check), paging plans + anchor literals, node documents
+    rest/                  adapter (with describe and file reads), guard (request parser, allowlist),
+                           script loader
 terraform/                 reference deployment module
 test/
   unit/                    config, guards, manifest, windows, URL signing
@@ -1060,6 +1136,7 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
   - the Cosmos DB emulator
   - Redis, standalone and cluster, with RedisJSON
   - a mock of the KIM HTTP API, with request and answer shapes recorded from a real kim-server; it asserts that no request outside the wire allowlist arrives
+  - a write-capable HTTP API for `rest`, with a password-grant sign-in and paged endpoints; it records every request that is not a read, and every `GET` on an endpoint that stands for one that writes
 - **Admin or owner credentials** everywhere.
 - **Planted traps:**
   - an autonomous-transaction function and a view on top of it
@@ -1074,8 +1151,9 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
   - stored procedure execution, blob uploads and metadata writes
   - Redis write and read-looking write commands (`GETEX`, `GETDEL`, `SPOP`, `PFCOUNT`, `XREADGROUP`, `SORT … STORE`, …), blocking commands, scripts and transactions, quoting tricks in the command tokenizer
   - KIM `reveal`, URLs and `Reference(…)` literals on foreign origins or other stages, texts that are not a query, bind parameters, and calls to draft, live session, backup and token-exchange endpoints
+  - REST: other methods, paths and origins, dot segments and encoded slashes, method override headers and parameters, credentials set by the agent, bodies on `GET`, and redirects, pages and script-prepared requests outside the allowlist
 
-  This is complemented by property-based fuzzing of the Oracle lexer, and by unit tests of the KIM lexer, paging plans, anchor literals and wire allowlist.
+  This is complemented by property-based fuzzing of the Oracle lexer, and by unit tests of the KIM lexer, paging plans, anchor literals and wire allowlist, and of the REST request parser and allowlist.
 - **Pass criteria:**
   1. A database or account checksum before and after the run is identical.
   2. **Every layer is tested on its own with the other layers disabled**, which shows that each one holds by itself.
@@ -1096,6 +1174,7 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
 - Cancellation; a replica dying mid-job (heartbeat expiry → `failed`).
 - Log Analytics time-window splitting; Cosmos RU throttling.
 - KIM paging: record windows and typed node anchors at one pinned snapshot, the halving page size on the result budget, written windows sent as they are, offloaded contents read by Range, and the key exchange on an expired token.
+- REST sign-in, paging and a new sign-in after a `401` through the script; redirects; file reads with and without Range support; the request and response size limits.
 - Retention expiry.
 
 ---
@@ -1104,7 +1183,7 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
 
 All of §1–§10 is implemented. Instead of a spike, targeted experiments settled the technical questions before the build (Parquet streaming and exact decimals, Cosmos and Blob wire guards, block-gzip compatibility, Postgres, Oracle and SQL Server write paths, the Redis client guard, the MCP v2 server). Their findings are reflected above.
 
-Every source is tested against a real database or emulator with write-capable credentials (`test/integration`): Postgres (`pgvector/pgvector:pg17`), Oracle (Free 23ai locally on ARM64, XE 21 in CI), SQL Server (Azure SQL Edge locally on ARM64, SQL Server 2022 in CI), the Cosmos DB emulator, Azurite, Redis 8, and mocks of the Log Analytics query API and the KIM HTTP API. An end-to-end test runs the real process with Entra-style tokens from a local issuer, the MCP client, downloads and stdio mode.
+Every source is tested against a real database or emulator with write-capable credentials (`test/integration`): Postgres (`pgvector/pgvector:pg17`), Oracle (Free 23ai locally on ARM64, XE 21 in CI), SQL Server (Azure SQL Edge locally on ARM64, SQL Server 2022 in CI), the Cosmos DB emulator, Azurite, Redis 8, and mocks of the Log Analytics query API, the KIM HTTP API and a REST API. An end-to-end test runs the real process with Entra-style tokens from a local issuer, the MCP client, downloads and stdio mode.
 
 The KIM adapter was also verified once against a real local kim-server with a synthetic stage: paging 1,200 records and objects, typed anchors, withheld and offloaded nodes, and file ranges.
 
@@ -1129,6 +1208,7 @@ What remains is verification in a real deployment (§12).
 - One result format per source type, with no format option: Parquet (ZSTD) for Postgres, Oracle, SQL Server and Log Analytics; gzip-compressed NDJSON for Cosmos, Redis, KIM and blob listings (§6.1).
 - Blob contents are referenced, never copied. Listing rows point to the source blobs, which Periscope serves read-only from the source, pinned to the ETag (or version or snapshot) at query time (§6.1, §6.4).
 - Redis is a source type: read-only command allowlist, `SCAN` with optional values as key export, a client guard on every wire command, and optional replica reads (§7.1).
+- REST is a source type: one HTTP request per query, an operator-declared allowlist checked on every request that leaves the process, and one optional script module that signs in, pages and shapes responses. Binary responses are referenced and fetched again on read (§6.1, §7.1).
 - KIM is a source type: one node or record query over its HTTP API, paged by Periscope at one pinned snapshot, offloaded contents referenced like blobs, a wire allowlist in the only HTTP client, and a query check (§6.1, §7.1).
 - Compression at rest, files served exactly as stored. NDJSON is block-compressed gzip (independent ~1 MiB members) with a block index, and Parquet uses row groups and the page index. Windows cost one ranged read, and downloads need no transport compression (§6.2, §6.4).
 - One download URL per result: `get_result` returns only the manifest URL. The manifest lists files and block indexes by relative path, and everything except internal job state is downloadable (§6.4).

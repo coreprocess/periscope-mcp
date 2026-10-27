@@ -9,6 +9,7 @@ import {
     type SourceDefaults,
     type SourceType,
     sourceKeySchemas,
+    VAR_KEY_TYPES,
 } from './sources.ts';
 
 export interface AuthConfig {
@@ -88,6 +89,7 @@ const enumVar = <T extends string>(env: Env, name: string, values: readonly T[],
 };
 
 const SOURCE_KEY = /^PERISCOPE_SOURCE_(\d+)_([A-Z0-9_]+)$/;
+const VAR_KEY = /^VAR_([A-Z0-9_]+)$/;
 
 /** Discovers and validates `PERISCOPE_SOURCE_<i>_<KEY>` variables. */
 export const parseSources = (env: Env, defaults: SourceDefaults): SourceConfig[] => {
@@ -117,10 +119,15 @@ export const parseSources = (env: Env, defaults: SourceDefaults): SourceConfig[]
         if (!SOURCE_TYPES.includes(type)) return fail(`${prefix}_TYPE`, `expected one of ${SOURCE_TYPES.join(', ')}`);
 
         const schema = sourceKeySchemas[type];
-        for (const key of Object.keys(raw)) {
-            if (!(key in schema.shape)) fail(`${prefix}_${key}`, `unknown key for type '${type}'`);
+        const keys: Record<string, string> = {};
+        const vars: Record<string, string> = {};
+        for (const [key, value] of Object.entries(raw)) {
+            const variable = VAR_KEY.exec(key)?.[1];
+            if (variable && VAR_KEY_TYPES.has(type)) vars[variable] = value;
+            else if (key in schema.shape) keys[key] = value;
+            else fail(`${prefix}_${key}`, `unknown key for type '${type}'`);
         }
-        const parsed = schema.safeParse(raw);
+        const parsed = schema.safeParse(keys);
         if (!parsed.success) {
             const issue = parsed.error.issues[0];
             const key = issue?.path[0] !== undefined ? `${prefix}_${String(issue.path[0])}` : prefix;
@@ -128,7 +135,7 @@ export const parseSources = (env: Env, defaults: SourceDefaults): SourceConfig[]
         }
         let source: SourceConfig;
         try {
-            source = buildSourceConfig(index, parsed.data as never, defaults);
+            source = buildSourceConfig(index, parsed.data as never, defaults, vars);
         } catch (error) {
             return fail(prefix, error instanceof Error ? error.message : String(error));
         }

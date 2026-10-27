@@ -9,6 +9,13 @@ import { checkReadOnlyStatement as checkTsql, lex as lexTsql } from '../../src/s
 import { checkReadOnlyStatement, lex } from '../../src/sources/oracle/lexer.ts';
 import { collectReferences, ensureParser, parseReadOnlyQuery } from '../../src/sources/postgres/guard.ts';
 import { isAllowedOnWire, parseReadOnlyCommand } from '../../src/sources/redis/guard.ts';
+import {
+    compileRules,
+    DEFAULT_AGENT_HEADERS,
+    parseRequestText,
+    type RestRequest,
+    rejectionOf,
+} from '../../src/sources/rest/guard.ts';
 
 describe('postgres syntax-tree guard', () => {
     before(() => ensureParser());
@@ -369,5 +376,115 @@ describe('cosmos wire guard', () => {
         );
         for (const method of ['PUT', 'PATCH', 'DELETE'])
             assert.equal(isAllowedCosmosRequest(request(method, {})), false);
+    });
+});
+
+describe('rest request allowlist', () => {
+    const base = 'https://api.example.com/v1';
+    const rules = compileRules(base, [
+        'GET /items/**',
+        'GET /users/*/',
+        'POST /search',
+        'GET https://files.example.com/**',
+    ]);
+    const agent = new Set(DEFAULT_AGENT_HEADERS);
+    const get = (url: string, headers: Record<string, string> = {}): RestRequest => ({
+        method: 'GET',
+        url,
+        headers,
+        body: undefined,
+    });
+    const allowed = (request: RestRequest, headers?: ReadonlySet<string>) =>
+        rejectionOf(rules, request, headers) === undefined;
+
+    it('parses a request text with headers and body', () => {
+        assert.deepEqual(
+            parseRequestText(base, '\nPOST /search HTTP/1.1\r\nContent-Type: application/json\r\n\r\n{"q":1}'),
+            {
+                method: 'POST',
+                url: `${base}/search`,
+                headers: { 'content-type': 'application/json' },
+                body: '{"q":1}',
+            }
+        );
+        assert.deepEqual(parseRequestText(base, 'get https://files.example.com/a'), get('https://files.example.com/a'));
+        assert.throws(() => parseRequestText(base, 'GET items'), /starting with \//);
+        assert.throws(() => parseRequestText(base, 'GET /a\nAccept: x\naccept: y'), /duplicate header/);
+        assert.throws(() => parseRequestText(base, 'GET /a\nno colon'), /not a header line/);
+        assert.throws(() => parseRequestText(base, 'GET'), /METHOD URL/);
+    });
+
+    it('allows the configured methods, origins and paths', () => {
+        assert.ok(allowed(get(`${base}/items/`)));
+        assert.ok(allowed(get(`${base}/items/7/parts?page=2`)));
+        assert.ok(allowed({ ...get(`${base}/items/7`), method: 'HEAD' }));
+        assert.ok(allowed(get(`${base}/users/7/`)));
+        assert.ok(allowed({ method: 'POST', url: `${base}/search`, headers: {}, body: '{}' }));
+        assert.ok(allowed(get('https://files.example.com/x/y.pdf')));
+        assert.ok(allowed(get(`${base}/items/1`, { accept: 'application/json' }), agent));
+    });
+
+    it('rejects other methods, paths and origins', () => {
+        assert.ok(!allowed({ method: 'DELETE', url: `${base}/items/7`, headers: {}, body: undefined }));
+        assert.ok(!allowed({ method: 'POST', url: `${base}/items/7`, headers: {}, body: '{}' }));
+        assert.ok(!allowed({ method: 'POST', url: `${base}/search/x`, headers: {}, body: '{}' }));
+        assert.ok(!allowed(get(`${base}/users/7/delete/`)));
+        assert.ok(!allowed(get(`${base}/users/7`)));
+        assert.ok(!allowed(get(`${base}/admin`)));
+        assert.ok(!allowed(get('https://api.example.com/admin')));
+        assert.ok(!allowed(get('http://api.example.com/v1/items/1')));
+        assert.ok(!allowed(get('https://api.example.com:8443/v1/items/1')));
+        assert.ok(!allowed(get('https://evil.example.com/v1/items/1')));
+        assert.ok(!allowed(get('ftp://api.example.com/v1/items/1')));
+    });
+
+    it('rejects ambiguous paths that servers may resolve differently', () => {
+        for (const path of [
+            '/items/../admin',
+            '/items/./1',
+            '/items/%2e%2e/admin',
+            '/items/%2E%2e/admin',
+            '/items/a%2fb',
+            '/items/a%5Cb',
+            '/items/a\\b',
+            '/items//1',
+            '/items/.\t./admin',
+            '/items/a b',
+            '/items/1#x',
+        ]) {
+            assert.ok(!allowed(get(`${base}${path}`)), path);
+        }
+        assert.ok(!allowed(get('https://user:pw@api.example.com/v1/items/1')));
+        assert.ok(!allowed(get('https://api.example.com@evil.example.com/v1/items/1')));
+    });
+
+    it('rejects every way of overriding the method', () => {
+        for (const header of ['x-http-method-override', 'x-http-method', 'x-method-override']) {
+            assert.ok(!allowed(get(`${base}/items/1`, { [header]: 'DELETE' })), header);
+        }
+        assert.ok(!allowed(get(`${base}/items/1?_method=DELETE`)));
+        assert.ok(!allowed(get(`${base}/items/1?X-HTTP-Method-Override=DELETE`)));
+    });
+
+    it('limits agent headers and bodies', () => {
+        assert.ok(!allowed(get(`${base}/items/1`, { authorization: 'Bearer x' }), agent));
+        assert.ok(!allowed(get(`${base}/items/1`, { cookie: 'a=b' }), agent));
+        assert.ok(allowed(get(`${base}/items/1`, { authorization: 'Bearer x' })));
+        assert.ok(!allowed(get(`${base}/items/1`, { accept: 'a\rb' })));
+        assert.ok(!allowed({ ...get(`${base}/items/1`), body: 'x' }));
+    });
+
+    it('rejects malformed rules', () => {
+        for (const rule of [
+            'GET',
+            'get /a',
+            'GET a',
+            'GET /a?x=1',
+            'GET /a/../b',
+            'GET /a/%2fb',
+            'GET https://u@h/a',
+        ]) {
+            assert.throws(() => compileRules(base, [rule]), /ALLOW rule/, rule);
+        }
     });
 });

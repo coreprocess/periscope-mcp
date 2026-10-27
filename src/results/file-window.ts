@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Readable } from 'node:stream';
 import { PeriscopeError } from '../core/errors.ts';
+import { isTextual } from '../core/media.ts';
 import type { FileProvider, FileReference } from '../sources/adapter.ts';
 import { getJson, putJson, type ResultStore } from './store/store.ts';
 import type { BlockIndex } from './types.ts';
@@ -13,13 +14,6 @@ import type { BlockIndex } from './types.ts';
 export const LINES_PER_CHUNK = 1000;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
-const TEXT_EXTENSIONS =
-    /\.(txt|log|csv|tsv|json|ndjson|jsonl|md|xml|ya?ml|html?|sql|ini|cfg|conf|properties|ts|js|py|java|cs|sh)$/i;
-
-export const isTextual = (contentType: string, name: string): boolean =>
-    /^text\//.test(contentType) ||
-    /(json|xml|yaml|csv|x-ndjson|javascript|sql)/.test(contentType) ||
-    TEXT_EXTENSIONS.test(name);
 
 interface LineIndex extends BlockIndex {
     complete: boolean;
