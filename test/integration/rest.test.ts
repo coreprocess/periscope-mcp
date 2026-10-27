@@ -136,6 +136,10 @@ const startMock = async (): Promise<Mock> => {
                     res.writeHead(500, { 'content-type': 'text/plain' });
                     res.end('boom');
                     return;
+                case '/v1/odd':
+                    res.writeHead(999, { 'content-type': 'text/plain' });
+                    res.end('odd gateway');
+                    return;
                 case '/v1/search':
                     json(res, 200, { query: JSON.parse(body) as unknown });
                     return;
@@ -228,7 +232,7 @@ describe('rest source', () => {
         mock = await startMock();
         harness = await createResultHarness();
         plain = await adapterOf({
-            ALLOW: 'GET /items, GET /items/**, GET /text, GET /files/*, GET /redirect, GET /redirect-out, GET /fail, POST /search',
+            ALLOW: 'GET /items, GET /items/**, GET /text, GET /files/*, GET /redirect, GET /redirect-out, GET /fail, GET /odd, POST /search',
         });
         scripted = await adapterOf(scriptKeys());
     });
@@ -326,6 +330,9 @@ describe('rest source', () => {
         const failed = await manifestOf(plain, 'GET /fail');
         assert.equal(failed.status, 'failed');
         assert.match(failed.error?.message ?? '', /HTTP 500.*boom/);
+        const odd = await manifestOf(plain, 'GET /odd');
+        assert.equal(odd.status, 'failed');
+        assert.match(odd.error?.message ?? '', /HTTP 999.*odd gateway/);
     });
 
     it('signs in, pages and signs in again through the script', async () => {

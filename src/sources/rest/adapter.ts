@@ -37,7 +37,9 @@ const ERROR_BODY_CHARS = 300;
 
 /** Fails the body stream once it exceeds `maxBytes`, so no response can exhaust memory. */
 const limitBody = (response: Response, maxBytes: number): Response => {
-    if (!response.body || NULL_BODY_STATUSES.has(response.status)) return response;
+    // a status outside 200–599 cannot be put into a new Response; such an answer is an error anyway (not ok)
+    const rewrappable = response.status >= 200 && response.status <= 599;
+    if (!response.body || !rewrappable || NULL_BODY_STATUSES.has(response.status)) return response;
     let seen = 0;
     const body = response.body.pipeThrough(
         new TransformStream<Uint8Array, Uint8Array>({
