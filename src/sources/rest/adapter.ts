@@ -339,8 +339,12 @@ export class RestAdapter implements SourceAdapter, FileProvider {
         const { maxRequests, maxResponseBytes } = this.config;
         const respond = async (request: RestRequest, response: Response) => {
             if (!transform) return { documents: await this.#documents(response, request, link), next: undefined };
-            const file = (url: string, name?: unknown) =>
-                link(url, null, typeof name === 'string' && name !== '' ? name : undefined);
+            const file = (url: string, name?: unknown, size?: unknown) =>
+                link(
+                    url,
+                    Number.isSafeInteger(size) && (size as number) >= 0 ? (size as number) : null,
+                    typeof name === 'string' && name !== '' ? name : undefined
+                );
             const transformContext = { ...this.#context(signal), request, file };
             return toOutcome(await this.#hook('transform', signal, () => transform(response, transformContext)));
         };

@@ -13,9 +13,10 @@ export interface TransformContext extends HookContext {
     request: RestRequest;
     /**
      * A file link for a `GET` URL (absolute or a path under the base URL), served by fetching it again; `name` is the
-     * file name downloads use (default: the URL's last path segment).
+     * file name downloads use (default: the URL's last path segment), `size` the size in bytes, if known, for the
+     * result's file totals.
      */
-    file(url: string, name?: string): string;
+    file(url: string, name?: string, size?: number): string;
 }
 
 export interface TransformOutcome {

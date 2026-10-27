@@ -368,11 +368,11 @@ describe('rest source', () => {
         assert.equal(mock.requests, sent);
     });
 
-    it('names linked files after the name the script gives', async () => {
+    it('names linked files and counts their sizes as the script gives them', async () => {
         const naming = await adapterOf({
             ALLOW: 'GET /files/*',
             SCRIPT: `export function transform(response, { file }) {
-                return [{ file: file('/files/report.pdf', 'claims/2026: report.pdf') }, { file: file('/files/report.pdf') }];
+                return [{ file: file('/files/report.pdf', 'claims/2026: report.pdf', 1234) }, { file: file('/files/report.pdf') }];
             }`,
         });
         const resultId = await harness.run(naming, 'GET /files/report.pdf');
@@ -381,6 +381,9 @@ describe('rest source', () => {
             links.map((link) => decodeFileReference(harness.signer, resultId, link)?.name),
             ['claims_2026: report.pdf', 'report.pdf']
         );
+        const { manifest } = await harness.service.snapshot(resultId);
+        assert.equal(manifest.blobCount, 2);
+        assert.equal(manifest.blobBytes, 1234);
     });
 
     it('blocks requests the script turns into anything outside the allowlist', async () => {

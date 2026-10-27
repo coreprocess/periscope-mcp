@@ -190,7 +190,10 @@ export const createMcpServer = (context: ToolContext): McpServer => {
             try {
                 requireSource(context, source);
                 const adapter = await context.registry.get(source);
-                const prepared = await adapter.validate(query, params, options ?? {});
+                // guards reject with their own errors; anything else (e.g. a connection timeout) is the source's
+                const prepared = await adapter.validate(query, params, options ?? {}).catch((error: unknown) => {
+                    throw toPeriscopeError(error, 'source_error');
+                });
                 const resultId = await context.service.start(adapter, prepared, caller);
                 audit(context, caller, 'query', { source, resultId, query });
                 return json({
@@ -247,13 +250,17 @@ export const createMcpServer = (context: ToolContext): McpServer => {
             title: 'Read a window of a result',
             description:
                 'Returns one window of a result inline: rows (offset, limit, optional columns), or for blob results the content of a ' +
-                'referenced text file by line range (file, lineOffset, lineLimit) or an image (file). Long values are truncated; downloads keep full values.',
+                'referenced text file by line range (file, lineOffset, lineLimit) or an image (file). Long values are truncated; downloads keep full values. ' +
+                "To download a referenced file, append its `file` value verbatim (already URL-encoded) to the manifest URL's directory.",
             inputSchema: z.object({
                 resultId: z.string(),
                 offset: z.number().int().min(0).optional(),
                 limit: z.number().int().min(1).optional(),
                 columns: z.array(z.string()).optional().describe('Columns or JSON paths (documents) to return'),
-                file: z.string().optional().describe('Blob results: the file path from a listing row'),
+                file: z
+                    .string()
+                    .optional()
+                    .describe('The `file` value of a row (files/…), verbatim: it is already URL-encoded'),
                 lineOffset: z.number().int().min(0).optional(),
                 lineLimit: z.number().int().min(1).optional(),
             }),
