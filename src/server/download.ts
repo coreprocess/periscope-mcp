@@ -25,6 +25,16 @@ const contentTypeOf = (path: string): string => {
     return 'application/json';
 };
 
+/** RFC 6266: an ASCII `filename` for old clients and the exact name as UTF-8 in `filename*`. */
+const contentDisposition = (name: string): string => {
+    const ascii = name.replace(/[^\x20-\x7e]|["\\]/g, '_');
+    const encoded = encodeURIComponent(name).replace(
+        /['()*]/g,
+        (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+    );
+    return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+};
+
 interface ByteRange {
     start: number;
     end: number;
@@ -168,7 +178,7 @@ export const downloadHandler =
 
             res.setHeader('ETag', etag);
             res.setHeader('Content-Type', contentType);
-            res.setHeader('Content-Disposition', `attachment; filename="${fileName.replace(/["\r\n]/g, '')}"`);
+            res.setHeader('Content-Disposition', contentDisposition(fileName));
             if (req.headers['if-none-match'] === etag) {
                 res.status(304).end();
                 return;

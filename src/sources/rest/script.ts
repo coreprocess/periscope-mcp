@@ -11,8 +11,11 @@ export interface HookContext {
 export interface TransformContext extends HookContext {
     /** The request this response answers, as prepared. */
     request: RestRequest;
-    /** A file link for a `GET` URL (absolute or a path under the base URL), served by re-fetching it. */
-    file(url: string): string;
+    /**
+     * A file link for a `GET` URL (absolute or a path under the base URL), served by fetching it again; `name` is the
+     * file name downloads use (default: the URL's last path segment).
+     */
+    file(url: string, name?: string): string;
 }
 
 export interface TransformOutcome {

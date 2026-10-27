@@ -5,6 +5,7 @@ import { after, before, describe, it } from 'node:test';
 import { loadConfig, parseSources } from '../../src/config/env.ts';
 import { QueryRejectedError } from '../../src/core/errors.ts';
 import { nullLoggers } from '../../src/core/logger.ts';
+import { decodeFileReference } from '../../src/results/files.ts';
 import { createHttpApp } from '../../src/server/http.ts';
 import { SourceRegistry } from '../../src/sources/registry.ts';
 import { RestAdapter } from '../../src/sources/rest/adapter.ts';
@@ -19,6 +20,7 @@ import { createResultHarness, type ResultHarness } from '../helpers/results.ts';
 const PDF = Buffer.from(Array.from({ length: 10_000 }, (_, i) => i % 251));
 const STREAM = Buffer.from(Array.from({ length: 5_000 }, (_, i) => (i * 7) % 256));
 const PAGES = 3;
+const PDF_NAME = 'Schadenbericht Übersicht € 2026.pdf';
 
 /** A file reference as the rest source writes it: the URL base64url-encoded. */
 const linkOf = (url: string, name: string) => ({ container: Buffer.from(url).toString('base64url'), name });
@@ -48,7 +50,12 @@ const startMock = async (): Promise<Mock> => {
     const ranged = (req: IncomingMessage, res: ServerResponse, data: Buffer) => {
         const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? '');
         if (!range) {
-            res.writeHead(200, { 'content-type': 'application/pdf', 'content-length': data.length, etag: '"pdf-1"' });
+            res.writeHead(200, {
+                'content-type': 'application/pdf',
+                'content-length': data.length,
+                'content-disposition': `attachment; filename="report.pdf"; filename*=UTF-8''${encodeURIComponent(PDF_NAME)}`,
+                etag: '"pdf-1"',
+            });
             res.end(data);
             return;
         }
@@ -296,7 +303,10 @@ describe('rest source', () => {
             assert.equal(part.status, 206);
             assert.deepEqual(Buffer.from(await part.arrayBuffer()), PDF.subarray(10, 20));
             const whole = await fetch(url);
-            assert.equal(whole.headers.get('content-disposition'), 'attachment; filename="report.pdf"');
+            assert.equal(
+                whole.headers.get('content-disposition'),
+                `attachment; filename="Schadenbericht _bersicht _ 2026.pdf"; filename*=UTF-8''${encodeURIComponent(PDF_NAME)}`
+            );
             assert.deepEqual(Buffer.from(await whole.arrayBuffer()), PDF);
         } finally {
             server.closeAllConnections();
@@ -356,6 +366,21 @@ describe('rest source', () => {
         await assert.rejects(plain.validate('GET /items', { a: 1 }, {}), { code: 'invalid_argument' });
         await assert.rejects(plain.validate('GET /items', undefined, { x: 1 }), { code: 'invalid_argument' });
         assert.equal(mock.requests, sent);
+    });
+
+    it('names linked files after the name the script gives', async () => {
+        const naming = await adapterOf({
+            ALLOW: 'GET /files/*',
+            SCRIPT: `export function transform(response, { file }) {
+                return [{ file: file('/files/report.pdf', 'claims/2026: report.pdf') }, { file: file('/files/report.pdf') }];
+            }`,
+        });
+        const resultId = await harness.run(naming, 'GET /files/report.pdf');
+        const links = (await harness.service.readRows(resultId, 0, 2, ['file'])).rows.map((row) => String(row[0]));
+        assert.deepEqual(
+            links.map((link) => decodeFileReference(harness.signer, resultId, link)?.name),
+            ['claims_2026: report.pdf', 'report.pdf']
+        );
     });
 
     it('blocks requests the script turns into anything outside the allowlist', async () => {

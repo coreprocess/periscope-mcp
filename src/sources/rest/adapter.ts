@@ -77,12 +77,41 @@ const contentLengthOf = (response: Response): number | null => {
     return Number.isSafeInteger(value) && value >= 0 ? value : null;
 };
 
-/** The last path segment of a URL, the name a linked file is served under. */
-const fileNameOf = (url: string): string =>
-    new URL(url).pathname
-        .split('/')
-        .filter((segment) => segment.length > 0)
-        .at(-1) ?? 'file';
+/** Decodes percent-encoding, keeping the text as it is where it is not valid. */
+const decodeLenient = (text: string): string => {
+    try {
+        return decodeURIComponent(text);
+    } catch {
+        return text;
+    }
+};
+
+/**
+ * The name a linked file is served under: the given name, or else the last path segment of its URL. Path separators
+ * and control characters become `_`, so the name stays one segment of the link.
+ */
+const fileNameOf = (url: string, name?: string): string => {
+    const given =
+        name ??
+        new URL(url).pathname
+            .split('/')
+            .filter((segment) => segment.length > 0)
+            .at(-1);
+    const clean = [...decodeLenient(given ?? '')]
+        .map((char) => (char === '/' || char === '\\' || char.charCodeAt(0) < 0x20 || char === '\x7f' ? '_' : char))
+        .join('')
+        .trim()
+        .slice(0, 255);
+    return clean || 'file';
+};
+
+/** The file name a response declares in `Content-Disposition` (`filename*` before `filename`), if any. */
+const dispositionName = (response: Response): string | undefined => {
+    const header = response.headers.get('content-disposition') ?? '';
+    const extended = /filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/.exec(header)?.[1];
+    if (extended) return decodeLenient(extended.trim());
+    return /filename\s*=\s*"([^"]*)"|filename\s*=\s*([^;]+)/.exec(header)?.slice(1).find(Boolean)?.trim();
+};
 
 /**
  * Any HTTP API, read through an operator-declared allowlist of `METHOD pattern` rules and an optional script that
@@ -253,7 +282,7 @@ export class RestAdapter implements SourceAdapter, FileProvider {
     async #documents(
         response: Response,
         request: RestRequest,
-        link: (url: string, size: number | null) => string
+        link: (url: string, size: number | null, name?: string) => string
     ): Promise<unknown[]> {
         if (!response.ok) {
             const text = (await response.text()).trim().slice(0, ERROR_BODY_CHARS);
@@ -286,14 +315,14 @@ export class RestAdapter implements SourceAdapter, FileProvider {
         }
         await response.body?.cancel();
         const size = contentLengthOf(response);
-        return [{ contentType: contentType || null, size, file: link(request.url, size) }];
+        return [{ contentType: contentType || null, size, file: link(request.url, size, dispositionName(response)) }];
     }
 
     async execute(prepared: PreparedQuery, context: ExecutionContext): Promise<DocumentStream> {
         const signal = AbortSignal.any([context.signal, AbortSignal.timeout(remaining(context.deadline))]);
         let files = 0;
         let fileBytes = 0;
-        const link = (url: string, size: number | null): string => {
+        const link = (url: string, size: number | null, name?: string): string => {
             const target = resolveTarget(this.config.baseUrl, url);
             const reason = target
                 ? rejectionOf(this.#rules, { method: 'GET', url: target, headers: {}, body: undefined })
@@ -303,14 +332,16 @@ export class RestAdapter implements SourceAdapter, FileProvider {
             fileBytes += size ?? 0;
             return context.fileReference({
                 container: Buffer.from(target).toString('base64url'),
-                name: fileNameOf(target),
+                name: fileNameOf(target, name),
             });
         };
         const transform = this.#script.transform;
         const { maxRequests, maxResponseBytes } = this.config;
         const respond = async (request: RestRequest, response: Response) => {
             if (!transform) return { documents: await this.#documents(response, request, link), next: undefined };
-            const transformContext = { ...this.#context(signal), request, file: (url: string) => link(url, null) };
+            const file = (url: string, name?: unknown) =>
+                link(url, null, typeof name === 'string' && name !== '' ? name : undefined);
+            const transformContext = { ...this.#context(signal), request, file };
             return toOutcome(await this.#hook('transform', signal, () => transform(response, transformContext)));
         };
         const send = (request: RestRequest) => this.#send(request, signal);
