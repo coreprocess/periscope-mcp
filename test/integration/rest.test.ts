@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
-import { parseSources } from '../../src/config/env.ts';
+import { loadConfig, parseSources } from '../../src/config/env.ts';
 import { QueryRejectedError } from '../../src/core/errors.ts';
 import { nullLoggers } from '../../src/core/logger.ts';
+import { createHttpApp } from '../../src/server/http.ts';
+import { SourceRegistry } from '../../src/sources/registry.ts';
 import { RestAdapter } from '../../src/sources/rest/adapter.ts';
 import { createResultHarness, type ResultHarness } from '../helpers/results.ts';
 
@@ -17,6 +19,9 @@ import { createResultHarness, type ResultHarness } from '../helpers/results.ts';
 const PDF = Buffer.from(Array.from({ length: 10_000 }, (_, i) => i % 251));
 const STREAM = Buffer.from(Array.from({ length: 5_000 }, (_, i) => (i * 7) % 256));
 const PAGES = 3;
+
+/** A file reference as the rest source writes it: the URL base64url-encoded. */
+const linkOf = (url: string, name: string) => ({ container: Buffer.from(url).toString('base64url'), name });
 
 interface Mock {
     server: Server;
@@ -244,7 +249,7 @@ describe('rest source', () => {
 
     it('serves linked files by fetching them again, with ranges whether or not the API supports them', async () => {
         const read = async (name: string, range?: { offset: number; length: number }) => {
-            const content = await plain.openFile({ container: `${mock.origin}/v1/files/${name}`, name }, range);
+            const content = await plain.openFile(linkOf(`${mock.origin}/v1/files/${name}`, name), range);
             const chunks: Buffer[] = [];
             for await (const chunk of content.stream) chunks.push(chunk as Buffer);
             return { size: content.size, data: Buffer.concat(chunks), contentType: content.contentType };
@@ -256,9 +261,47 @@ describe('rest source', () => {
         const streamed = await read('stream.bin', { offset: 1_990, length: 20 });
         assert.equal(streamed.size, STREAM.length);
         assert.deepEqual(streamed.data, STREAM.subarray(1_990, 2_010));
-        await assert.rejects(plain.openFile({ container: `${mock.origin}/v1/admin/wipe`, name: 'wipe' }), {
+        await assert.rejects(plain.openFile(linkOf(`${mock.origin}/v1/admin/wipe`, 'wipe')), {
             code: 'forbidden',
         });
+    });
+
+    it('serves linked files through the download route, with ranges', async () => {
+        const config = loadConfig({
+            PERISCOPE_TRANSPORT: 'http',
+            PERISCOPE_HOST: '127.0.0.1',
+            PERISCOPE_PORT: '0',
+            PERISCOPE_AUTH: 'none',
+            PERISCOPE_RESULTS_STORE: 'filesystem',
+        });
+        const loggers = nullLoggers();
+        const registry = new SourceRegistry([plain.config], loggers.log, () => plain);
+        const context = {
+            config,
+            service: harness.service,
+            registry,
+            signer: harness.signer,
+            loggers,
+            publicUrl: () => '',
+        };
+        const downloads = { store: harness.service.store, signer: harness.signer, registry, loggers };
+        const server = createHttpApp(config, context, downloads, { mcp: false }).listen(0, '127.0.0.1');
+        await new Promise((resolve) => server.once('listening', resolve));
+        try {
+            const resultId = await harness.run(plain, 'GET /files/report.pdf');
+            const [[file]] = (await harness.service.readRows(resultId, 0, 1, ['file'])).rows as [[string]];
+            const token = harness.signer.signToken({ r: resultId, u: 'test', e: Math.floor(Date.now() / 1000) + 600 });
+            const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/r/${token}/${file}`;
+            const part = await fetch(url, { headers: { range: 'bytes=10-19' } });
+            assert.equal(part.status, 206);
+            assert.deepEqual(Buffer.from(await part.arrayBuffer()), PDF.subarray(10, 20));
+            const whole = await fetch(url);
+            assert.equal(whole.headers.get('content-disposition'), 'attachment; filename="report.pdf"');
+            assert.deepEqual(Buffer.from(await whole.arrayBuffer()), PDF);
+        } finally {
+            server.closeAllConnections();
+            await new Promise((resolve) => server.close(resolve));
+        }
     });
 
     it('follows redirects only within the allowlist', async () => {
@@ -342,7 +385,7 @@ describe('rest source', () => {
         assert.equal(loop.error?.code, 'limit_exceeded');
         const small = await adapterOf({ ALLOW: 'GET /files/*', MAX_RESPONSE_BYTES: '1000' });
         assert.equal((await manifestOf(small, 'GET /files/stream.bin')).status, 'succeeded');
-        await assert.rejects(small.openFile({ container: `${mock.origin}/v1/files/stream.bin`, name: 's' }), {
+        await assert.rejects(small.openFile(linkOf(`${mock.origin}/v1/files/stream.bin`, 's')), {
             code: 'too_large',
         });
     });

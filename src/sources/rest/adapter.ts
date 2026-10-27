@@ -301,7 +301,10 @@ export class RestAdapter implements SourceAdapter, FileProvider {
             if (!target || reason) throw new PeriscopeError('source_error', `Cannot link the file: ${reason}`);
             files++;
             fileBytes += size ?? 0;
-            return context.fileReference({ container: target, name: fileNameOf(target) });
+            return context.fileReference({
+                container: Buffer.from(target).toString('base64url'),
+                name: fileNameOf(target),
+            });
         };
         const transform = this.#script.transform;
         const { maxRequests, maxResponseBytes } = this.config;
@@ -333,15 +336,16 @@ export class RestAdapter implements SourceAdapter, FileProvider {
         return { format: 'ndjson', batches: batches(), blobTotals: () => ({ count: files, bytes: fileBytes }) };
     }
 
-    /** Serves a linked file by fetching its URL again through the wire guard; ranges are honored either way. */
+    /**
+     * Serves a linked file by fetching its URL again through the wire guard; ranges are honored either way. The
+     * reference holds the URL base64url-encoded, so a link has no encoded slash a gateway could decode.
+     */
     async openFile(reference: FileReference, range?: { offset: number; length: number }): Promise<FileContent> {
+        const url = Buffer.from(reference.container, 'base64url').toString();
         const signal = AbortSignal.timeout(this.config.maxQueryDurationMs);
         const headers: Record<string, string> = { 'accept-encoding': 'identity' };
         if (range) headers.range = `bytes=${range.offset}-${range.offset + Math.max(range.length, 1) - 1}`;
-        const response = await this.#send(
-            { method: 'GET', url: reference.container, headers, body: undefined },
-            signal
-        );
+        const response = await this.#send({ method: 'GET', url, headers, body: undefined }, signal);
         if (!response.ok) {
             await response.body?.cancel();
             if (response.status === 404 || response.status === 410) {
@@ -353,8 +357,7 @@ export class RestAdapter implements SourceAdapter, FileProvider {
         }
         const contentType = mediaTypeOf(response) || 'application/octet-stream';
         const etag =
-            response.headers.get('etag') ??
-            `"${createHash('sha256').update(reference.container).digest('base64url').slice(0, 22)}"`;
+            response.headers.get('etag') ?? `"${createHash('sha256').update(url).digest('base64url').slice(0, 22)}"`;
         const body = response.body
             ? Readable.fromWeb(response.body as WebReadableStream<Uint8Array>)
             : Readable.from([] as Buffer[]);

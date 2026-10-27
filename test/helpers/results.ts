@@ -12,6 +12,7 @@ export const testCaller: Caller = { oid: 'test-user', name: 'Test User', roles: 
 
 export interface ResultHarness {
     service: ResultService;
+    signer: Signer;
     dir: string;
     run(adapter: SourceAdapter, query: string, params?: unknown, options?: Record<string, unknown>): Promise<string>;
     dispose(): Promise<void>;
@@ -22,6 +23,7 @@ export const createResultHarness = async (
 ): Promise<ResultHarness> => {
     const dir = await mkdtemp(join(tmpdir(), 'periscope-results-'));
     const store = new FilesystemResultStore(dir);
+    const signer = new Signer(randomBytes(32));
     await store.init();
     const service = new ResultService({
         store,
@@ -31,10 +33,11 @@ export const createResultHarness = async (
         maxConcurrentQueriesPerUser: 8,
         read: { maxRows: 500, maxBytes: 65_536, maxValueChars: 2000 },
         loggers: overrides.loggers ?? nullLoggers(),
-        signer: new Signer(randomBytes(32)),
+        signer,
     });
     return {
         service,
+        signer,
         dir,
         async run(adapter, query, params, options = {}) {
             const prepared = await adapter.validate(query, params, options);

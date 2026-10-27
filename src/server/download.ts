@@ -80,8 +80,10 @@ export interface DownloadDeps {
 export const downloadHandler =
     (deps: DownloadDeps) =>
     async (req: Request, res: Response): Promise<void> => {
-        const params = req.params as unknown as { token: string; rest: string[] | string };
-        const rest = Array.isArray(params.rest) ? params.rest.join('/') : String(params.rest ?? '');
+        const params = req.params as unknown as { token: string };
+        // the path as sent, still percent-encoded: file references decode their segments themselves, and a
+        // decoded `%2F` or `%25` would change them (`/r/<token>/<rest>`)
+        const rest = req.path.split('/').slice(3).join('/');
         const payload = deps.signer.verifyToken(params.token);
         const deny = (status: number, message: string): void => {
             res.status(status)
@@ -114,6 +116,7 @@ export const downloadHandler =
             let etag: string;
             let contentType: string;
             let open: (range?: ByteRange) => Promise<Readable>;
+            let fileName = basename(rest);
             if (rest.startsWith('files/')) {
                 const reference = decodeFileReference(deps.signer, resultId, rest);
                 const adapter = reference ? await deps.registry.get(manifest.source) : undefined;
@@ -122,6 +125,7 @@ export const downloadHandler =
                     return;
                 }
                 const files = adapter.files;
+                fileName = basename(reference.name);
                 const head = await files.openFile(reference, { offset: 0, length: 1 });
                 head.stream.destroy();
                 size = head.size;
@@ -164,7 +168,7 @@ export const downloadHandler =
 
             res.setHeader('ETag', etag);
             res.setHeader('Content-Type', contentType);
-            res.setHeader('Content-Disposition', `attachment; filename="${basename(rest).replace(/"/g, '')}"`);
+            res.setHeader('Content-Disposition', `attachment; filename="${fileName.replace(/["\r\n]/g, '')}"`);
             if (req.headers['if-none-match'] === etag) {
                 res.status(304).end();
                 return;
