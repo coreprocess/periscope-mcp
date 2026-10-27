@@ -40,3 +40,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:integration
+      # The same Oracle cases through the thick driver (PERISCOPE_ORACLE_DRIVER=thick), with the Instant Client
+      # Basic Light the image ships (Dockerfile).
+      - name: Oracle with the thick driver
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/instantclient.zip" \
+            https://download.oracle.com/otn_software/linux/instantclient/2390000/instantclient-basiclite-linux.x64-23.9.0.25.07.zip
+          echo "664a88e52f04ca787184a78b90ce09d34b1af919830be6973688219550e079b3  $RUNNER_TEMP/instantclient.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/instantclient.zip" -d "$RUNNER_TEMP"
+          sudo apt-get update -q && sudo apt-get install -y -q libaio1t64
+          ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 "$RUNNER_TEMP/instantclient_23_9/libaio.so.1"
+          LD_LIBRARY_PATH="$RUNNER_TEMP/instantclient_23_9" PERISCOPE_TEST_ORACLE_DRIVER=thick \
+            node --test --test-reporter=spec test/integration/oracle.test.ts

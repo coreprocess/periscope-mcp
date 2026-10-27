@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { parseIsoDuration } from '../core/duration.ts';
 import { PeriscopeError } from '../core/errors.ts';
+import { parseCertificates } from '../core/tls.ts';
 import {
     buildSourceConfig,
     SOURCE_TYPES,
@@ -55,6 +56,10 @@ export interface Config {
     maxConcurrentQueriesPerUser: number;
     auditLog: string;
     logLevel: string;
+    /** `thick` loads Oracle's client libraries for every Oracle source (e.g. for Native Network Encryption). */
+    oracleDriver: 'thin' | 'thick';
+    /** PEM certificates trusted in addition to Node's bundled CAs. */
+    extraCaCerts: string[];
     sources: SourceConfig[];
 }
 
@@ -86,6 +91,16 @@ const enumVar = <T extends string>(env: Env, name: string, values: readonly T[],
     if (raw === undefined || raw === '') return fallback;
     if (!values.includes(raw as T)) fail(name, `expected one of ${values.join(', ')}`);
     return raw as T;
+};
+
+const certificatesVar = (env: Env, name: string): string[] => {
+    const raw = env[name];
+    if (raw === undefined || raw.trim() === '') return [];
+    try {
+        return parseCertificates(raw);
+    } catch (error) {
+        return fail(name, error instanceof Error ? error.message : String(error));
+    }
 };
 
 const SOURCE_KEY = /^PERISCOPE_SOURCE_(\d+)_([A-Z0-9_]+)$/;
@@ -272,6 +287,8 @@ export const loadConfig = (env: Env = process.env): Config => {
         maxConcurrentQueriesPerUser: intVar(env, 'PERISCOPE_MAX_CONCURRENT_QUERIES', 4),
         auditLog: env.PERISCOPE_AUDIT_LOG ?? (transport === 'stdio' ? 'stderr' : 'stdout'),
         logLevel: env.PERISCOPE_LOG_LEVEL ?? 'info',
+        oracleDriver: enumVar(env, 'PERISCOPE_ORACLE_DRIVER', ['thin', 'thick'] as const, 'thin'),
+        extraCaCerts: certificatesVar(env, 'PERISCOPE_EXTRA_CA_CERTS'),
         sources: parseSources(env, { maxQueryDurationMs, maxResultBytes }),
     };
 };

@@ -8,6 +8,7 @@ import { loadConfig } from './config/env.ts';
 import { errorMessage } from './core/errors.ts';
 import { createLoggers } from './core/logger.ts';
 import { Signer } from './core/signing.ts';
+import { trustCertificates } from './core/tls.ts';
 import { VERSION } from './core/version.ts';
 import type { StoreDescriptor } from './results/parquet/protocol.ts';
 import { ResultService } from './results/service.ts';
@@ -15,6 +16,7 @@ import { AzureBlobResultStore } from './results/store/azureblob.ts';
 import { FilesystemResultStore } from './results/store/filesystem.ts';
 import type { ResultStore } from './results/store/store.ts';
 import { createHttpApp, listen } from './server/http.ts';
+import { useThickDriver } from './sources/oracle/driver.ts';
 import { SourceRegistry } from './sources/registry.ts';
 import type { ToolContext } from './tools/context.ts';
 import { createMcpServer } from './tools/tools.ts';
@@ -68,6 +70,14 @@ const main = async (): Promise<void> => {
     const loggers = createLoggers({ level: config.logLevel, auditLog: config.auditLog, transport: config.transport });
     const { log } = loggers;
     if (config.download.signingKeyGenerated) log.info('download signing key generated for this process');
+    if (config.extraCaCerts.length > 0) {
+        trustCertificates(config.extraCaCerts);
+        log.info({ certificates: config.extraCaCerts.length }, 'additional CA certificates trusted');
+    }
+    if (config.oracleDriver === 'thick') {
+        useThickDriver();
+        log.info('oracle sources use the thick driver (Oracle Instant Client)');
+    }
 
     const store: ResultStore =
         config.results.store === 'filesystem'

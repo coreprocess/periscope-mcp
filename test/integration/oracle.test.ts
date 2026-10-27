@@ -6,7 +6,12 @@ import type { OracleSourceConfig } from '../../src/config/sources.ts';
 import { QueryRejectedError } from '../../src/core/errors.ts';
 import { nullLoggers } from '../../src/core/logger.ts';
 import { OracleAdapter } from '../../src/sources/oracle/adapter.ts';
+import { useThickDriver } from '../../src/sources/oracle/driver.ts';
 import { createResultHarness, type ResultHarness } from '../helpers/results.ts';
+
+// PERISCOPE_TEST_ORACLE_DRIVER=thick runs every case through Oracle's client libraries (Instant Client on the
+// library path), as PERISCOPE_ORACLE_DRIVER=thick does in the image.
+if (process.env.PERISCOPE_TEST_ORACLE_DRIVER === 'thick') useThickDriver();
 
 const IMAGE = process.env.PERISCOPE_TEST_ORACLE_IMAGE ?? 'gvenzl/oracle-free:23-slim';
 const SERVICE = IMAGE.includes('oracle-xe') ? 'XEPDB1' : 'FREEPDB1';

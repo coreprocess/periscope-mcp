@@ -41,6 +41,8 @@ All configuration comes from environment variables. For local use, `--env-file <
 | `PERISCOPE_MAX_RESULT_BYTES` | `10737418240` | Default maximum stored result size for sources |
 | `PERISCOPE_AUDIT_LOG` | `stdout` (http), `stderr` (stdio) | `stdout`, `stderr` or a file path (JSON lines) |
 | `PERISCOPE_LOG_LEVEL` | `info` | Operational log level |
+| `PERISCOPE_ORACLE_DRIVER` | `thin` | `thick`: every Oracle source connects through Oracle's client libraries, the Instant Client Basic Light shipped in the image, which databases that require Native Network Encryption or checksumming need. Basic Light supports the database character sets US7ASCII, WE8DEC, WE8ISO8859P1, WE8MSWIN1252, UTF8 and AL32UTF8 (national: AL16UTF16, UTF8). |
+| `PERISCOPE_EXTRA_CA_CERTS` | | PEM certificates trusted in addition to Node's bundled CAs, for every TLS connection: sources behind an internal CA (an on-premises API, a database with TLS) |
 | `AZURE_CLIENT_ID` | | Client ID of a user-assigned managed identity for `DefaultAzureCredential` |
 | `PERISCOPE_VERSION` | set by the image build | Version reported by `--version` and to MCP clients; the release pipeline sets it from the tag |
 
@@ -83,6 +85,8 @@ Keys for every source:
 | `USER`, `PASSWORD` | Required |
 | `ALLOW_ROUTINES` | Comma-separated routines (`OWNER.NAME` or `NAME`) cleared after review |
 | `ALLOW_DBLINKS` | `true` to allow `@dblink` references |
+
+A database that requires Native Network Encryption fails in the default thin driver with NJS-533; set `PERISCOPE_ORACLE_DRIVER=thick` for the whole instance.
 
 ### `mssql`
 

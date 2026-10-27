@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { loadConfig, parseSources } from '../../src/config/env.ts';
 import { PeriscopeError } from '../../src/core/errors.ts';
@@ -276,6 +277,31 @@ describe('source configuration', () => {
 });
 
 describe('global configuration', () => {
+    it('reads the Oracle driver and additional CA certificates', () => {
+        const certificate = readFileSync(new URL('../fixtures/tls-test.crt', import.meta.url), 'utf8');
+        const defaults = loadConfig({});
+        assert.equal(defaults.oracleDriver, 'thin');
+        assert.deepEqual(defaults.extraCaCerts, []);
+        const config = loadConfig({
+            PERISCOPE_ORACLE_DRIVER: 'thick',
+            PERISCOPE_EXTRA_CA_CERTS: `${certificate}\n${certificate}`,
+        });
+        assert.equal(config.oracleDriver, 'thick');
+        assert.equal(config.extraCaCerts.length, 2);
+        expectConfigError(() => loadConfig({ PERISCOPE_ORACLE_DRIVER: 'instant' }), /PERISCOPE_ORACLE_DRIVER/);
+        expectConfigError(
+            () => loadConfig({ PERISCOPE_EXTRA_CA_CERTS: 'not a certificate' }),
+            /PERISCOPE_EXTRA_CA_CERTS/
+        );
+        expectConfigError(
+            () =>
+                loadConfig({
+                    PERISCOPE_EXTRA_CA_CERTS: '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----',
+                }),
+            /PERISCOPE_EXTRA_CA_CERTS/
+        );
+    });
+
     it('defaults to stdio without auth and a filesystem store', () => {
         const config = loadConfig({});
         assert.equal(config.transport, 'stdio');
