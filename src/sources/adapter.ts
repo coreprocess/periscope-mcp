@@ -66,6 +66,8 @@ export interface FileReference {
     etag?: string;
     versionId?: string;
     snapshot?: string;
+    /** The size in bytes the source announced when it linked the file, for content served without a length. */
+    size?: number;
 }
 
 export interface FileContent {

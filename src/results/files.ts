@@ -6,14 +6,16 @@ import type { FileReference } from '../sources/adapter.ts';
  *
  *     files/<mac>/<pin>/<container>/<blob name segments…>
  *
- * where `pin` is `e~<etag>`, `v~<versionId>` or `s~<snapshot>` and `mac` binds the
- * reference to one result. A download token for a result therefore only reaches the
- * blobs that are actually in its listing.
+ * where `pin` is `e~<etag>`, `v~<versionId>`, `s~<snapshot>` or `z~<size>` (a linked
+ * file whose size the source announced) and `mac` binds the reference to one result. A
+ * download token for a result therefore only reaches the blobs that are actually in its
+ * listing.
  */
 
 const pinOf = (reference: FileReference): string => {
     if (reference.versionId) return `v~${reference.versionId}`;
     if (reference.snapshot) return `s~${reference.snapshot}`;
+    if (reference.size !== undefined && !reference.etag) return `z~${reference.size}`;
     return `e~${(reference.etag ?? '').replace(/^"|"$/g, '')}`;
 };
 
@@ -46,5 +48,6 @@ export const decodeFileReference = (signer: Signer, resultId: string, path: stri
     if (pin.startsWith('v~')) return { container, name, versionId: value };
     if (pin.startsWith('s~')) return { container, name, snapshot: value };
     if (pin.startsWith('e~')) return { container, name, etag: `"${value}"` };
+    if (pin.startsWith('z~') && /^\d{1,15}$/.test(value)) return { container, name, size: Number(value) };
     return undefined;
 };

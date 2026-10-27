@@ -82,6 +82,11 @@ describe('ids and signing', () => {
             versionId: '2026-01-01T00:00:00.0000000Z',
         });
         assert.equal(decodeFileReference(signer, 'r_one', version)?.versionId, '2026-01-01T00:00:00.0000000Z');
+        // a linked file's announced size is signed with the reference
+        const sized = { container: 'aHR0cHM6Ly9leGFtcGxlLmNvbS9h', name: 'a.eml', size: 4312319 };
+        const sizedPath = encodeFileReference(signer, 'r_one', sized);
+        assert.deepEqual(decodeFileReference(signer, 'r_one', sizedPath), sized);
+        assert.equal(decodeFileReference(signer, 'r_one', sizedPath.replace('z~4312319', 'z~1')), undefined);
     });
 });
 

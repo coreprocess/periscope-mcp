@@ -58,6 +58,36 @@ const limitBody = (response: Response, maxBytes: number): Response => {
     return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 };
 
+/** How many sizes of files served without a length an adapter remembers; the oldest is forgotten first. */
+const MAX_COUNTED_SIZES = 1000;
+
+/** Bytes counted to the end of a stream that is read and dropped, never kept. */
+const countBytes = async (stream: AsyncIterable<Buffer>): Promise<number> => {
+    let total = 0;
+    for await (const chunk of stream) total += chunk.length;
+    return total;
+};
+
+/** A stream that must have exactly `size` bytes; more or fewer fail it, so a changed file never passes as complete. */
+async function* exactly(stream: AsyncIterable<Buffer>, size: number, onMismatch: () => void): AsyncGenerator<Buffer> {
+    let seen = 0;
+    for await (const chunk of stream) {
+        seen += chunk.length;
+        if (seen > size) {
+            onMismatch();
+            throw new PeriscopeError('source_error', `The file has more than the ${size} bytes it was linked with`);
+        }
+        yield chunk;
+    }
+    if (seen < size) {
+        onMismatch();
+        throw new PeriscopeError(
+            'source_error',
+            `The file ended after ${seen} of the ${size} bytes it was linked with`
+        );
+    }
+}
+
 /** Bytes `[offset, offset + length)` of a stream that starts at byte 0. */
 async function* sliceStream(stream: AsyncIterable<Buffer>, offset: number, length: number): AsyncGenerator<Buffer> {
     const end = offset + length;
@@ -124,6 +154,8 @@ export class RestAdapter implements SourceAdapter, FileProvider {
     readonly #rules: AllowRule[];
     readonly #agentHeaders: ReadonlySet<string>;
     readonly #vars: Readonly<Record<string, string>>;
+    /** Sizes counted for linked URLs whose source sends no length and whose link has none. */
+    readonly #countedSizes = new Map<string, number>();
     #script: RestScript = {};
 
     constructor(config: RestSourceConfig) {
@@ -335,6 +367,7 @@ export class RestAdapter implements SourceAdapter, FileProvider {
             return context.fileReference({
                 container: Buffer.from(target).toString('base64url'),
                 name: fileNameOf(target, name),
+                ...(size === null ? {} : { size }),
             });
         };
         const transform = this.#script.transform;
@@ -375,7 +408,9 @@ export class RestAdapter implements SourceAdapter, FileProvider {
 
     /**
      * Serves a linked file by fetching its URL again through the wire guard; ranges are honored either way. The
-     * reference holds the URL base64url-encoded, so a link has no encoded slash a gateway could decode.
+     * reference holds the URL base64url-encoded, so a link has no encoded slash a gateway could decode. Content
+     * without a length streams with the size its link announced, or else one counted in a first pass, and is held
+     * to that size byte for byte; nothing is buffered.
      */
     async openFile(reference: FileReference, range?: { offset: number; length: number }): Promise<FileContent> {
         const url = Buffer.from(reference.container, 'base64url').toString();
@@ -402,7 +437,7 @@ export class RestAdapter implements SourceAdapter, FileProvider {
         if (response.status === 206 && partial) {
             const [, start, end, total] = partial as unknown as [string, string, string, string];
             return {
-                size: total === '*' ? Number(end) + 1 : Number(total),
+                size: total === '*' ? (reference.size ?? Number(end) + 1) : Number(total),
                 contentType,
                 etag,
                 stream: body,
@@ -416,23 +451,17 @@ export class RestAdapter implements SourceAdapter, FileProvider {
                 'The source answered a range request without a valid Content-Range'
             );
         }
-        let size = contentLengthOf(response);
-        let stream: Readable = body;
-        if (size === null) {
-            // without a length the size is only known once the whole content is read
-            const chunks: Buffer[] = [];
-            let total = 0;
-            for await (const chunk of body as AsyncIterable<Buffer>) {
-                total += chunk.length;
-                if (total > this.config.maxResponseBytes) {
-                    body.destroy();
-                    throw new PeriscopeError('too_large', 'The file has no length and exceeds MAX_RESPONSE_BYTES');
-                }
-                chunks.push(chunk);
-            }
-            size = total;
-            stream = Readable.from([Buffer.concat(chunks)]);
+        const length = contentLengthOf(response);
+        const size = length ?? reference.size ?? this.#countedSizes.get(url);
+        if (size === undefined) {
+            // neither the response nor the link knows the size: count it once (nothing is kept), then fetch again
+            const counted = await countBytes(body);
+            this.#rememberSize(url, counted);
+            return this.openFile({ ...reference, size: counted }, range);
         }
+        // a size from the link or the count is checked byte for byte while the content streams through
+        const stream =
+            length === null ? Readable.from(exactly(body, size, () => this.#countedSizes.delete(url))) : body;
         if (!range) return { size, contentType, etag, stream };
         const end = Math.min(range.offset + Math.max(range.length, 1), size);
         return {
@@ -442,6 +471,14 @@ export class RestAdapter implements SourceAdapter, FileProvider {
             stream: Readable.from(sliceStream(stream, range.offset, end - range.offset)),
             range: { start: range.offset, end: end - 1 },
         };
+    }
+
+    #rememberSize(url: string, size: number): void {
+        this.#countedSizes.delete(url);
+        this.#countedSizes.set(url, size);
+        if (this.#countedSizes.size > MAX_COUNTED_SIZES) {
+            this.#countedSizes.delete(this.#countedSizes.keys().next().value as string);
+        }
     }
 
     async close(): Promise<void> {

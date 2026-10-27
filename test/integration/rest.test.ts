@@ -277,6 +277,32 @@ describe('rest source', () => {
         });
     });
 
+    it('streams files without a length, with the size of the link or one counted once', async () => {
+        const counting = await adapterOf({ ALLOW: 'GET /files/*' });
+        const url = `${mock.origin}/v1/files/stream.bin`;
+        const read = async (
+            link: ReturnType<typeof linkOf> & { size?: number },
+            range?: { offset: number; length: number }
+        ) => {
+            const before = mock.requests;
+            const content = await counting.openFile(link, range);
+            const chunks: Buffer[] = [];
+            for await (const chunk of content.stream) chunks.push(chunk as Buffer);
+            return { size: content.size, data: Buffer.concat(chunks), requests: mock.requests - before };
+        };
+        // the link's size: one fetch, streamed as it comes
+        const sized = await read({ ...linkOf(url, 's'), size: STREAM.length });
+        assert.deepEqual(sized, { size: STREAM.length, data: STREAM, requests: 1 });
+        // no size anywhere: counted in a first fetch that keeps nothing, then remembered
+        const counted = await read(linkOf(url, 's'), { offset: 0, length: 1 });
+        assert.deepEqual(counted, { size: STREAM.length, data: STREAM.subarray(0, 1), requests: 2 });
+        assert.deepEqual(await read(linkOf(url, 's')), { size: STREAM.length, data: STREAM, requests: 1 });
+        // content that does not match the size it was linked with fails instead of passing as complete
+        for (const size of [STREAM.length - 1, STREAM.length + 1]) {
+            await assert.rejects(read({ ...linkOf(url, 's'), size }), { code: 'source_error' }, String(size));
+        }
+    });
+
     it('serves linked files through the download route, with ranges', async () => {
         const config = loadConfig({
             PERISCOPE_TRANSPORT: 'http',
@@ -388,6 +414,11 @@ describe('rest source', () => {
             links.map((link) => decodeFileReference(harness.signer, resultId, link)?.name),
             ['claims_2026: report.pdf', 'report.pdf']
         );
+        // the size goes into the signed link, so the file can stream without a length from the source
+        assert.deepEqual(
+            links.map((link) => decodeFileReference(harness.signer, resultId, link)?.size),
+            [1234, undefined]
+        );
         const { manifest } = await harness.service.snapshot(resultId);
         assert.equal(manifest.blobCount, 2);
         assert.equal(manifest.blobBytes, 1234);
@@ -420,8 +451,10 @@ describe('rest source', () => {
         assert.equal(loop.error?.code, 'limit_exceeded');
         const small = await adapterOf({ ALLOW: 'GET /files/*', MAX_RESPONSE_BYTES: '1000' });
         assert.equal((await manifestOf(small, 'GET /files/stream.bin')).status, 'succeeded');
-        await assert.rejects(small.openFile(linkOf(`${mock.origin}/v1/files/stream.bin`, 's')), {
-            code: 'too_large',
-        });
+        // linked files stream, so the response limit does not apply to them
+        const content = await small.openFile(linkOf(`${mock.origin}/v1/files/stream.bin`, 's'));
+        const chunks: Buffer[] = [];
+        for await (const chunk of content.stream) chunks.push(chunk as Buffer);
+        assert.deepEqual(Buffer.concat(chunks), STREAM);
     });
 });

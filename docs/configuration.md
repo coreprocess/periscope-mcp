@@ -166,7 +166,7 @@ Any HTTP API. The query is one HTTP request; the response body becomes the docum
 | `SCRIPT` | An ES module exporting any of `check`, `prepare` and `transform`: rejects requests, adds credentials, pages and shapes responses (concept §4.2) |
 | `VAR_<NAME>` | A value for the script, available as `context.vars.<NAME>`; every `VAR_*` key is treated as a secret |
 | `GUIDE` | Usage notes for agents (endpoints, paging, field meanings), returned by `describe` |
-| `MAX_RESPONSE_BYTES` | Largest response body read into memory; default `67108864` (64 MiB) |
+| `MAX_RESPONSE_BYTES` | Largest response body read into memory; default `67108864` (64 MiB). Linked files stream and are not limited by it |
 | `MAX_REQUESTS` | Most requests one query may send, pages and retries included; default `1000` |
 
 The script is trusted configuration: its own `fetch` calls, such as a sign-in, are not checked against `ALLOW`. Every request that carries the agent's query is.
