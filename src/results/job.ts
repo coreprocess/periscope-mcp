@@ -138,6 +138,8 @@ export class Job {
             if (stream.format === 'ndjson') this.manifest.compression = 'gzip';
             else delete this.manifest.compression;
             await this.#consume(stream);
+            // sources may end their stream quietly when aborted; the result is then cut off, not complete
+            this.#throwIfAborted();
             const last = this.#writer;
             this.#writer = undefined;
             if (last && last.rowCount > 0) await this.#closePart(last, stream);

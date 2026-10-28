@@ -158,6 +158,29 @@ describe('result jobs', () => {
         assert.equal(manifest.error?.code, 'timeout');
     });
 
+    it('does not report a stream that ends quietly on abort as succeeded', async () => {
+        const quiet = (context: ExecutionContext): ResultStream => ({
+            format: 'ndjson',
+            batches: (async function* () {
+                for (let i = 0; ; i++) {
+                    await new Promise((resolve) => setTimeout(resolve, 50));
+                    if (context.signal.aborted) return;
+                    yield [{ i }];
+                }
+            })(),
+        });
+        const timedOut = await finish(await harness.run(new FakeAdapter(quiet, { maxQueryDurationMs: 300 }), 'q'));
+        assert.equal(timedOut.manifest.status, 'failed');
+        assert.equal(timedOut.manifest.error?.code, 'timeout');
+
+        const adapter = new FakeAdapter(quiet);
+        const resultId = await harness.service.start(adapter, await adapter.validate('q'), testCaller);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await harness.service.cancel(resultId);
+        const { manifest } = await finish(resultId);
+        assert.equal(manifest.status, 'cancelled');
+    });
+
     it('reports source errors and keeps partial data', async () => {
         const adapter = new FakeAdapter(() => ({
             format: 'parquet',
