@@ -62,6 +62,7 @@ export class Job {
     readonly #costs: Record<string, number> = {};
     #heartbeat: NodeJS.Timeout | undefined;
     #persisting: Promise<void> = Promise.resolve();
+    #stored: { manifest: Manifest; state: JobState } | undefined;
     #inferrer: SchemaInferrer | undefined;
     #writer: PartWriter | undefined;
 
@@ -75,7 +76,15 @@ export class Job {
         return this.#controller.signal;
     }
 
-    /** Notifies `listener` whenever the manifest changes. Returns an unsubscribe function. */
+    /**
+     * The manifest and state as last written to the store. Callers see only this, so a
+     * status never runs ahead of the manifest that downloads and other replicas read.
+     */
+    get stored(): { manifest: Manifest; state: JobState } | undefined {
+        return this.#stored;
+    }
+
+    /** Notifies `listener` whenever a new manifest is stored. Returns an unsubscribe function. */
     onChange(listener: () => void): () => void {
         this.#listeners.add(listener);
         return () => this.#listeners.delete(listener);
@@ -117,8 +126,9 @@ export class Job {
             .then(async () => {
                 await putJson(this.#options.store, `${prefix}/${STATE_PATH}`, state);
                 await putJson(this.#options.store, `${prefix}/${MANIFEST_PATH}`, manifest);
+                this.#stored = { manifest, state };
+                this.#notify();
             });
-        this.#notify();
         return this.#persisting;
     }
 

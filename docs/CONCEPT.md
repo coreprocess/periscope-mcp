@@ -371,6 +371,8 @@ For blob, KIM and REST results, `download` also contains `blobCount` and `blobBy
 
 While `running`, the response contains `progress` (`rows`, `bytes`, `files`, elapsed time) and all metadata known so far. The manifest URL is already available. It lists the files completed so far, so downloads can start while the query is still running.
 
+`get_result` reports what is stored, on every replica alike: a status and its manifest are reported only once they have been written to the result store, so a `succeeded` result's manifest is already final when it is downloaded. `progress` is stored with each completed file and every 5 s.
+
 ### 5.4 `read_result`
 
 ```

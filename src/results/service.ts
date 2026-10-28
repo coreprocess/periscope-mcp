@@ -139,8 +139,8 @@ export class ResultService {
 
     async #load(resultId: string): Promise<ResultSnapshot> {
         if (!isResultId(resultId)) throw new PeriscopeError('not_found', `Unknown result '${resultId}'`);
-        const local = this.#jobs.get(resultId);
-        if (local) return { manifest: structuredClone(local.manifest), state: structuredClone(local.state) };
+        const stored = this.#jobs.get(resultId)?.stored;
+        if (stored) return structuredClone(stored);
         const [manifest, state] = await Promise.all([
             getJson<Manifest>(this.#options.store, `${resultId}/${MANIFEST_PATH}`),
             getJson<JobState>(this.#options.store, `${resultId}/${STATE_PATH}`),

@@ -286,27 +286,33 @@ describe('end to end (http + entra auth, stdio)', () => {
                 stderr: 'inherit',
             })
         );
-        const sources = text(await client.callTool({ name: 'list_sources', arguments: {} })) as { sources: unknown[] };
-        assert.equal(sources.sources.length, 1);
-        const started = text(
-            await client.callTool({
-                name: 'query',
-                arguments: { source: 'shop', query: 'SELECT id FROM items WHERE id <= 5' },
-            })
-        );
-        let result = text(
-            await client.callTool({ name: 'get_result', arguments: { resultId: started.resultId, wait: 10 } })
-        );
-        while (result.status === 'running' || result.status === 'queued') {
-            result = text(
+        // a failed assertion must still stop the server process, or the test file never exits
+        try {
+            const sources = text(await client.callTool({ name: 'list_sources', arguments: {} })) as {
+                sources: unknown[];
+            };
+            assert.equal(sources.sources.length, 1);
+            const started = text(
+                await client.callTool({
+                    name: 'query',
+                    arguments: { source: 'shop', query: 'SELECT id FROM items WHERE id <= 5' },
+                })
+            );
+            let result = text(
                 await client.callTool({ name: 'get_result', arguments: { resultId: started.resultId, wait: 10 } })
             );
+            while (result.status === 'running' || result.status === 'queued') {
+                result = text(
+                    await client.callTool({ name: 'get_result', arguments: { resultId: started.resultId, wait: 10 } })
+                );
+            }
+            assert.equal(result.status, 'succeeded', JSON.stringify(result.error));
+            const manifestUrl = (result.download as { manifestUrl: string }).manifestUrl;
+            assert.match(manifestUrl, /^http:\/\/127\.0\.0\.1:\d+\/r\//);
+            const manifest = (await (await fetch(manifestUrl)).json()) as { rowCount: number };
+            assert.equal(manifest.rowCount, 5);
+        } finally {
+            await client.close();
         }
-        assert.equal(result.status, 'succeeded', JSON.stringify(result.error));
-        const manifestUrl = (result.download as { manifestUrl: string }).manifestUrl;
-        assert.match(manifestUrl, /^http:\/\/127\.0\.0\.1:\d+\/r\//);
-        const manifest = (await (await fetch(manifestUrl)).json()) as { rowCount: number };
-        assert.equal(manifest.rowCount, 5);
-        await client.close();
     });
 });

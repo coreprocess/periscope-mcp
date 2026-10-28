@@ -6,6 +6,8 @@ import { after, before, describe, it } from 'node:test';
 import type { SourceConfig } from '../../src/config/sources.ts';
 import { createLoggers } from '../../src/core/logger.ts';
 import { scalarColumn } from '../../src/results/parquet/columns.ts';
+import { FilesystemResultStore } from '../../src/results/store/filesystem.ts';
+import { MANIFEST_PATH, type Manifest } from '../../src/results/types.ts';
 import type {
     ExecutionContext,
     PreparedQuery,
@@ -179,6 +181,28 @@ describe('result jobs', () => {
         await harness.service.cancel(resultId);
         const { manifest } = await finish(resultId);
         assert.equal(manifest.status, 'cancelled');
+    });
+
+    it('reports a status only once its manifest is stored', async () => {
+        // manifest writes lag, as uploads to a remote store do
+        class SlowManifestStore extends FilesystemResultStore {
+            override async put(path: string, body: Buffer | string): Promise<void> {
+                if (path.endsWith(MANIFEST_PATH)) await new Promise((resolve) => setTimeout(resolve, 200));
+                await super.put(path, body);
+            }
+        }
+        const slow = await createResultHarness({ store: (dir) => new SlowManifestStore(dir) });
+        try {
+            const resultId = await slow.run(
+                new FakeAdapter(() => ({ format: 'ndjson', batches: documents(3)() })),
+                'q'
+            );
+            const stored = JSON.parse(await readFile(join(slow.dir, resultId, MANIFEST_PATH), 'utf8')) as Manifest;
+            assert.equal(stored.status, 'succeeded');
+            assert.equal(stored.rowCount, 3);
+        } finally {
+            await slow.dispose();
+        }
     });
 
     it('reports source errors and keeps partial data', async () => {

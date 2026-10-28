@@ -19,10 +19,10 @@ export interface ResultHarness {
 }
 
 export const createResultHarness = async (
-    overrides: { partBytes?: number; loggers?: Loggers } = {}
+    overrides: { partBytes?: number; loggers?: Loggers; store?: (dir: string) => FilesystemResultStore } = {}
 ): Promise<ResultHarness> => {
     const dir = await mkdtemp(join(tmpdir(), 'periscope-results-'));
-    const store = new FilesystemResultStore(dir);
+    const store = overrides.store?.(dir) ?? new FilesystemResultStore(dir);
     const signer = new Signer(randomBytes(32));
     await store.init();
     const service = new ResultService({
