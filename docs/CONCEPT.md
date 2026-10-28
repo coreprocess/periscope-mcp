@@ -536,7 +536,7 @@ Replicas cache block indexes and Parquet footers in a small in-memory LRU, so co
 
 ### 6.3 Execution
 
-- **Jobs** run in the replica that accepted the `query` call. `state.json` holds a heartbeat. If a replica dies, the result switches to `failed` (with partial data, if any) and the agent can re-run the query.
+- **Jobs** run in the replica that accepted the `query` call. `state.json` holds a heartbeat. If a replica dies, the result switches to `failed` (with partial data, if any) once the heartbeat is 30 s old, and the agent can re-run the query. A replica that shuts down (SIGTERM) fails its running jobs at once with code `internal` and waits up to 5 s until their final manifests are stored, so `get_result` reports the restart right away.
 - **Long-running queries** are bounded by `MAX_QUERY_DURATION` and `MAX_RESULT_BYTES` per source. They are independent of HTTP and MCP request timeouts.
 - **Per source type:**
   - **Postgres:** server-side cursor inside the read-only transaction; `statement_timeout` is set from `MAX_QUERY_DURATION`.

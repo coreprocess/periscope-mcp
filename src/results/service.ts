@@ -33,6 +33,8 @@ export interface ResultServiceOptions {
 const STALE_MS = 30_000;
 const POLL_MS = 500;
 export const MAX_WAIT_MS = 10_000;
+/** How long a shutdown waits for interrupted jobs to store their final manifest. */
+const SHUTDOWN_WAIT_MS = 5_000;
 
 export interface ResultSnapshot {
     manifest: Manifest;
@@ -48,6 +50,7 @@ export class ResultService {
     readonly #options: ResultServiceOptions;
     readonly #jobs = new Map<string, Job>();
     readonly #running = new Map<string, number>();
+    readonly #runs = new Set<Promise<void>>();
 
     constructor(options: ResultServiceOptions) {
         this.#options = options;
@@ -115,9 +118,10 @@ export class ResultService {
             { resultId, source: config.name, user: caller.oid, queryHash: state.queryHash },
             'query.start'
         );
-        void job
+        const run = job
             .run(() => adapter.execute(prepared, context), deadline)
             .finally(() => {
+                this.#runs.delete(run);
                 this.#running.set(caller.oid, Math.max((this.#running.get(caller.oid) ?? 1) - 1, 0));
                 this.#options.loggers.audit.info(
                     {
@@ -134,6 +138,7 @@ export class ResultService {
                 );
                 setTimeout(() => this.#jobs.delete(resultId), 60_000).unref();
             });
+        this.#runs.add(run);
         return resultId;
     }
 
@@ -225,15 +230,18 @@ export class ResultService {
         return deleted;
     }
 
-    /** Cancels running jobs on shutdown, so their results are marked accordingly. */
+    /**
+     * Fails running jobs on shutdown and waits until their final manifest is stored, so
+     * callers learn at once to run the query again instead of after the heartbeat expires.
+     */
     async shutdown(): Promise<void> {
         for (const job of this.#jobs.values()) {
-            if (job.manifest.status === 'running' || job.manifest.status === 'queued') job.cancel();
+            if (job.manifest.status === 'running' || job.manifest.status === 'queued') job.interrupt();
         }
-        const deadline = Date.now() + 5_000;
-        while ([...this.#jobs.values()].some((j) => j.manifest.status === 'running') && Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-        }
+        await Promise.race([
+            Promise.allSettled(this.#runs),
+            new Promise((resolve) => setTimeout(resolve, SHUTDOWN_WAIT_MS).unref()),
+        ]);
     }
 
     /** Remote cancellation: running jobs look for a cancel marker written by another replica. */

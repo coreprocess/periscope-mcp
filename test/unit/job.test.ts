@@ -62,6 +62,14 @@ const documents = (count: number, delayMs = 0) =>
         }
     };
 
+/** A store whose manifest writes lag, as uploads to a remote store do. */
+class SlowManifestStore extends FilesystemResultStore {
+    override async put(path: string, body: Buffer | string): Promise<void> {
+        if (path.endsWith(MANIFEST_PATH)) await new Promise((resolve) => setTimeout(resolve, 200));
+        await super.put(path, body);
+    }
+}
+
 describe('result jobs', () => {
     let harness: ResultHarness;
     before(async () => {
@@ -183,23 +191,35 @@ describe('result jobs', () => {
         assert.equal(manifest.status, 'cancelled');
     });
 
+    const storedManifest = async (dir: string, resultId: string) =>
+        JSON.parse(await readFile(join(dir, resultId, MANIFEST_PATH), 'utf8')) as Manifest;
+
     it('reports a status only once its manifest is stored', async () => {
-        // manifest writes lag, as uploads to a remote store do
-        class SlowManifestStore extends FilesystemResultStore {
-            override async put(path: string, body: Buffer | string): Promise<void> {
-                if (path.endsWith(MANIFEST_PATH)) await new Promise((resolve) => setTimeout(resolve, 200));
-                await super.put(path, body);
-            }
-        }
         const slow = await createResultHarness({ store: (dir) => new SlowManifestStore(dir) });
         try {
             const resultId = await slow.run(
                 new FakeAdapter(() => ({ format: 'ndjson', batches: documents(3)() })),
                 'q'
             );
-            const stored = JSON.parse(await readFile(join(slow.dir, resultId, MANIFEST_PATH), 'utf8')) as Manifest;
+            const stored = await storedManifest(slow.dir, resultId);
             assert.equal(stored.status, 'succeeded');
             assert.equal(stored.rowCount, 3);
+        } finally {
+            await slow.dispose();
+        }
+    });
+
+    it('fails running queries on shutdown and stores that before it returns', async () => {
+        const slow = await createResultHarness({ store: (dir) => new SlowManifestStore(dir) });
+        try {
+            const adapter = new FakeAdapter(() => ({ format: 'ndjson', batches: documents(1_000_000, 100)() }));
+            const resultId = await slow.service.start(adapter, await adapter.validate('q'), testCaller);
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            await slow.service.shutdown();
+            const stored = await storedManifest(slow.dir, resultId);
+            assert.equal(stored.status, 'failed');
+            assert.equal(stored.error?.code, 'internal');
+            assert.match(stored.error?.message ?? '', /restarted .* run the query again/);
         } finally {
             await slow.dispose();
         }

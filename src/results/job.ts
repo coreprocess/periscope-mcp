@@ -95,6 +95,13 @@ export class Job {
         this.#controller.abort(new PeriscopeError('cancelled', 'Query cancelled'));
     }
 
+    /** Stops the query because the server shuts down; it fails like a stopped replica, to be run again. */
+    interrupt(): void {
+        this.#controller.abort(
+            new PeriscopeError('internal', 'Periscope restarted while the query was running; run the query again')
+        );
+    }
+
     context(deadline: number, log: Logger): ExecutionContext {
         return {
             signal: this.#controller.signal,
