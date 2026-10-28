@@ -173,9 +173,22 @@ const DENIED_WORDS = new Set([
 export interface CheckedStatement {
     /** The SQL to send: the input with one trailing `;` or `/` removed. */
     sql: string;
-    /** Upper-cased identifiers, used to match blocked routines and views. */
-    identifiers: Set<string>;
+    /**
+     * Names the statement refers to, as dotted chains (`OASIS.VERTRAG` is `['OASIS', 'VERTRAG']`), used to match
+     * blocked routines and views; unquoted parts upper-cased. A column alias after `AS` names nothing and is left out.
+     */
+    references: string[][];
 }
+
+const isName = (token: Token | undefined): token is Token => token?.type === 'word' || token?.type === 'quoted';
+
+/** A name right after `AS` and before `,` or `FROM` defines a column alias; after `CAST(… AS` it would name a type. */
+const isAlias = (tokens: Token[], index: number): boolean => {
+    const next = tokens[index + 1];
+    return (
+        tokens[index - 1]?.value === 'AS' && (next?.value === ',' || (next?.type === 'word' && next.value === 'FROM'))
+    );
+};
 
 export interface CheckOptions {
     allowDbLinks: boolean;
@@ -202,7 +215,7 @@ export const checkReadOnlyStatement = (input: string, options: CheckOptions): Ch
     if (first.value === 'WITH' && ['FUNCTION', 'PROCEDURE'].includes(tokens[k + 1]?.value ?? '')) {
         throw new QueryRejectedError('Inline PL/SQL (WITH FUNCTION/PROCEDURE) is not allowed');
     }
-    const identifiers = new Set<string>();
+    const references: string[][] = [];
     for (let j = 0; j < tokens.length; j++) {
         const token = tokens[j] as Token;
         const nextToken = tokens[j + 1];
@@ -221,13 +234,17 @@ export const checkReadOnlyStatement = (input: string, options: CheckOptions): Ch
         if (token.type === 'punct' && token.value === '@' && !options.allowDbLinks) {
             throw new QueryRejectedError('Database links (@) are not allowed on this source');
         }
-        if (token.type === 'word' || token.type === 'quoted') {
-            const name = token.type === 'quoted' ? token.value : token.value;
-            if (SYSTEM_PACKAGE.test(name.toUpperCase()) && !ALLOWED_SYSTEM_PACKAGES.has(name.toUpperCase())) {
-                throw new QueryRejectedError(`System package '${name}' is not allowed in queries`);
+        if (isName(token)) {
+            if (
+                SYSTEM_PACKAGE.test(token.value.toUpperCase()) &&
+                !ALLOWED_SYSTEM_PACKAGES.has(token.value.toUpperCase())
+            ) {
+                throw new QueryRejectedError(`System package '${token.value}' is not allowed in queries`);
             }
-            identifiers.add(token.type === 'quoted' ? name : name.toUpperCase());
+            const continues = tokens[j - 1]?.value === '.' && isName(tokens[j - 2]);
+            if (continues) references.at(-1)?.push(token.value);
+            else if (!isAlias(tokens, j)) references.push([token.value]);
         }
     }
-    return { sql, identifiers };
+    return { sql, references };
 };

@@ -248,10 +248,14 @@ export class OracleAdapter implements SourceAdapter {
         }
         const checked = checkReadOnlyStatement(query, { allowDbLinks: this.config.allowDbLinks });
         const inventory = await this.#refreshInventory();
-        for (const identifier of checked.identifiers) {
-            if (inventory.blocked.has(identifier)) {
+        // `A.B…` is object B of schema A, or member B of package (or synonym) A: both are matched
+        for (const [first = '', second] of checked.references) {
+            const qualified = second === undefined ? undefined : `${first}.${second}`;
+            if (inventory.blocked.has(first) || (qualified && inventory.blockedQualified.has(qualified))) {
+                const name = qualified && !inventory.blocked.has(first) ? qualified : first;
                 throw new QueryRejectedError(
-                    `'${identifier}' is a routine (or depends on one) that may write; allowlist it with ALLOW_ROUTINES after review`
+                    `'${name}' is a routine, or a view or synonym using one, that may write; allowlist the routine with ALLOW_ROUTINES after review. ` +
+                        'A table of the same name in another schema is read qualified (OWNER.NAME); a column alias takes AS'
                 );
             }
         }

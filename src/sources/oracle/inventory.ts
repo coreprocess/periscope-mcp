@@ -11,12 +11,16 @@ import type { CredentialState } from '../adapter.ts';
  *   are blocked together with everything that depends on them;
  * - conservative: without catalog access (package bodies are invisible), every
  *   user-defined routine and everything that depends on one is blocked.
- * Allowlisted routines (ALLOW_ROUTINES) are exempt. Matching is by name, because Oracle
- * allows calling zero-argument functions without parentheses.
+ * Allowlisted routines (ALLOW_ROUTINES) are exempt. An unqualified name is matched by name alone,
+ * because Oracle allows calling zero-argument functions without parentheses and resolves it through
+ * synonyms; a qualified one (`OWNER.NAME`) only matches that object.
  */
 export interface OracleInventory {
     mode: 'precise' | 'conservative';
+    /** Names of blocked routines, views and synonyms, whatever their owner. */
     blocked: Set<string>;
+    /** The same objects as `OWNER.NAME`; public synonyms as `PUBLIC.NAME`. */
+    blockedQualified: Set<string>;
     credential: CredentialState;
     credentialNote: string;
 }
@@ -42,7 +46,7 @@ const dependencies = (view: 'dba_dependencies' | 'all_dependencies'): string => 
 SELECT owner, name, referenced_owner, referenced_name FROM ${view}
 WHERE referenced_owner NOT IN (${MAINTAINED}) AND referenced_link_name IS NULL`;
 
-const SYNONYMS = `SELECT synonym_name, table_owner, table_name FROM all_synonyms
+const SYNONYMS = `SELECT owner, synonym_name, table_owner, table_name FROM all_synonyms
 WHERE table_owner NOT IN (${MAINTAINED})`;
 
 const POSTURE = `
@@ -105,11 +109,11 @@ export const loadOracleInventory = async (
             queue.push(dependent);
         }
     }
-    const blocked = new Set([...blockedPairs].map((pair) => pair.slice(pair.indexOf('.') + 1)));
     const synonyms = ((await connection.execute(SYNONYMS)) as Rows).rows ?? [];
-    for (const [synonym, owner, name] of synonyms as [string, string, string][]) {
-        if (blockedPairs.has(`${owner}.${name}`)) blocked.add(synonym);
+    for (const [owner, synonym, targetOwner, target] of synonyms as [string, string, string, string][]) {
+        if (blockedPairs.has(`${targetOwner}.${target}`)) blockedPairs.add(`${owner}.${synonym}`);
     }
+    const blocked = new Set([...blockedPairs].map((pair) => pair.slice(pair.indexOf('.') + 1)));
 
     let credential: CredentialState = 'unverified';
     let note = 'privileges could not be inspected';
@@ -123,5 +127,5 @@ export const loadOracleInventory = async (
     } catch {
         // keep 'unverified'
     }
-    return { mode, blocked, credential, credentialNote: note };
+    return { mode, blocked, blockedQualified: blockedPairs, credential, credentialNote: note };
 };

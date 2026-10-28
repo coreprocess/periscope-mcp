@@ -35,6 +35,10 @@ const SETUP = [
     `CREATE OR REPLACE VIEW v_auto AS SELECT f_auto AS x FROM dual`,
     `CREATE OR REPLACE VIEW v_indirect AS SELECT f_wrap AS x FROM dual`,
     `CREATE OR REPLACE VIEW v_plain AS SELECT f_plain AS x FROM dual`,
+    // as in many applications: the public synonym of a table's name points to a view that uses a routine
+    `CREATE TABLE dokument (id NUMBER(10))`,
+    `INSERT INTO dokument VALUES (1)`,
+    `CREATE OR REPLACE VIEW v_dokument AS SELECT d.id, f_auto AS x FROM dokument d`,
 ];
 
 const ATTACKS = [
@@ -133,6 +137,9 @@ describe('oracle source', () => {
             'GRANT SELECT ON app.v_plain TO cat',
             'GRANT SELECT ON app.v_auto TO cat',
             'GRANT SELECT ANY DICTIONARY TO cat',
+            'GRANT SELECT ON app.dokument TO cat',
+            'GRANT SELECT ON app.v_dokument TO cat',
+            'CREATE PUBLIC SYNONYM dokument FOR app.v_dokument',
         ]) {
             await admin.execute(statement);
         }
@@ -176,6 +183,34 @@ describe('oracle source', () => {
         await precise.validate('SELECT * FROM app.v_plain', [], {});
         for (const sql of ['SELECT app.f_auto FROM dual', 'SELECT * FROM app.v_auto', 'SELECT app.pkg.f FROM dual']) {
             await assert.rejects(precise.validate(sql, [], {}), QueryRejectedError, sql);
+        }
+    });
+
+    it('reads a table qualified even when its unqualified name leads to a blocked view', async () => {
+        for (const adapter of [await makeAdapter('app', 'app'), await makeAdapter('cat', 'cat')]) {
+            const before = await checksum();
+            for (const sql of [
+                'SELECT * FROM app.dokument',
+                'SELECT d.id AS dokument, 1 AS v_dokument FROM app.dokument d',
+                'SELECT "ID" FROM "APP"."DOKUMENT"',
+            ]) {
+                const resultId = await harness.run(adapter, sql);
+                const { manifest } = await harness.service.snapshot(resultId);
+                assert.equal(manifest.status, 'succeeded', `${sql}: ${JSON.stringify(manifest.error)}`);
+                assert.equal(manifest.rowCount, 1, sql);
+            }
+            for (const sql of [
+                'SELECT * FROM dokument',
+                'SELECT * FROM app.v_dokument',
+                'SELECT * FROM "APP"."V_DOKUMENT"',
+                'SELECT id dokument FROM app.dokument',
+                'SELECT app.f_auto FROM dual',
+                'SELECT app.pkg.f FROM dual',
+                'SELECT pkg.f FROM dual',
+            ]) {
+                await assert.rejects(adapter.validate(sql, [], {}), QueryRejectedError, sql);
+            }
+            assert.equal(await checksum(), before);
         }
     });
 

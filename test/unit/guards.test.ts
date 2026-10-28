@@ -99,6 +99,30 @@ describe('oracle lexer and statement filter', () => {
         );
     });
 
+    it('collects the names a statement refers to as dotted chains, without column aliases', () => {
+        assert.deepEqual(
+            check('SELECT d.id AS vertrag, x "Alias", pkg.f, CAST(1 AS t_num) FROM oasis . dokument d, "Own"."Tab"')
+                .references,
+            [
+                ['SELECT'],
+                ['D', 'ID'],
+                ['AS'],
+                ['X'],
+                ['Alias'],
+                ['PKG', 'F'],
+                ['CAST'],
+                ['AS'],
+                ['T_NUM'],
+                ['FROM'],
+                ['OASIS', 'DOKUMENT'],
+                ['D'],
+                ['Own', 'Tab'],
+            ]
+        );
+        // an alias without AS, or an AS before anything but "," or FROM, still counts as a name
+        assert.deepEqual(check('SELECT 1 vertrag FROM dual').references, [['SELECT'], ['VERTRAG'], ['FROM'], ['DUAL']]);
+    });
+
     it('accepts reading statements and strips one terminator', () => {
         assert.equal(check('SELECT 1 FROM dual;').sql, 'SELECT 1 FROM dual');
         assert.equal(check('SELECT 1 FROM dual\n/').sql, 'SELECT 1 FROM dual');
