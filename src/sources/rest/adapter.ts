@@ -88,6 +88,13 @@ async function* exactly(stream: AsyncIterable<Buffer>, size: number, onMismatch:
     }
 }
 
+/**
+ * A stream of `generator`, which reads `source`, that destroys `source` with it. A generator never read is never
+ * started, so destroying its stream alone would leave the response open until its timeout fails it unhandled.
+ */
+const over = (source: Readable, generator: AsyncGenerator<Buffer>): Readable =>
+    Readable.from(generator).once('close', () => source.destroy());
+
 /** Bytes `[offset, offset + length)` of a stream that starts at byte 0. */
 async function* sliceStream(stream: AsyncIterable<Buffer>, offset: number, length: number): AsyncGenerator<Buffer> {
     const end = offset + length;
@@ -461,14 +468,19 @@ export class RestAdapter implements SourceAdapter, FileProvider {
         }
         // a size from the link or the count is checked byte for byte while the content streams through
         const stream =
-            length === null ? Readable.from(exactly(body, size, () => this.#countedSizes.delete(url))) : body;
+            length === null
+                ? over(
+                      body,
+                      exactly(body, size, () => this.#countedSizes.delete(url))
+                  )
+                : body;
         if (!range) return { size, contentType, etag, stream };
         const end = Math.min(range.offset + Math.max(range.length, 1), size);
         return {
             size,
             contentType,
             etag,
-            stream: Readable.from(sliceStream(stream, range.offset, end - range.offset)),
+            stream: over(stream, sliceStream(stream, range.offset, end - range.offset)),
             range: { start: range.offset, end: end - 1 },
         };
     }

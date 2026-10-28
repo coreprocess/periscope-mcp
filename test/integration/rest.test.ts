@@ -31,6 +31,8 @@ interface Mock {
     writes: string[];
     requests: number;
     signIns: number;
+    /** Responses of /v1/files/stalled.bin still open: they send a first chunk and then nothing. */
+    stalled: number;
     expireTokens(): void;
 }
 
@@ -42,7 +44,13 @@ const readBody = async (req: IncomingMessage): Promise<string> => {
 
 const startMock = async (): Promise<Mock> => {
     const tokens = new Set<string>();
-    const mock = { writes: [], requests: 0, signIns: 0, expireTokens: () => tokens.clear() } as unknown as Mock;
+    const mock = {
+        writes: [],
+        requests: 0,
+        signIns: 0,
+        stalled: 0,
+        expireTokens: () => tokens.clear(),
+    } as unknown as Mock;
     const json = (res: ServerResponse, status: number, body: unknown) => {
         res.writeHead(status, { 'content-type': 'application/json' });
         res.end(JSON.stringify(body));
@@ -124,6 +132,18 @@ const startMock = async (): Promise<Mock> => {
                     res.write(STREAM.subarray(0, 2_000));
                     res.end(STREAM.subarray(2_000));
                     return;
+                case '/v1/files/stalled.bin': {
+                    // ignores Range, as many file servers do, and stalls after the first chunk
+                    const sized = url.searchParams.get('length') === 'known';
+                    res.writeHead(200, {
+                        'content-type': 'application/octet-stream',
+                        ...(sized ? { 'content-length': STREAM.length } : { 'transfer-encoding': 'chunked' }),
+                    });
+                    res.write(STREAM.subarray(0, 2_000));
+                    mock.stalled++;
+                    res.once('close', () => mock.stalled--);
+                    return;
+                }
                 case '/v1/redirect':
                     res.writeHead(302, { location: '/v1/items/1' });
                     res.end();
@@ -301,6 +321,22 @@ describe('rest source', () => {
         for (const size of [STREAM.length - 1, STREAM.length + 1]) {
             await assert.rejects(read({ ...linkOf(url, 's'), size }), { code: 'source_error' }, String(size));
         }
+    });
+
+    it('releases a file opened only for its size, even when the source ignores ranges', async () => {
+        // the download route and read_result open 1 byte to learn the size and destroy the stream unread
+        const short = await adapterOf({ ALLOW: 'GET /files/*', MAX_QUERY_DURATION: 'PT1S' });
+        const url = `${mock.origin}/v1/files/stalled.bin`;
+        const probes = [
+            short.openFile(linkOf(`${url}?length=known`, 's'), { offset: 0, length: 1 }),
+            short.openFile({ ...linkOf(url, 's'), size: STREAM.length }, { offset: 0, length: 1 }),
+            short.openFile({ ...linkOf(url, 's'), size: STREAM.length }),
+        ];
+        for (const head of await Promise.all(probes)) head.stream.destroy();
+        for (let i = 0; i < 20 && mock.stalled > 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+        assert.equal(mock.stalled, 0, 'every connection is closed with its stream');
+        // past MAX_QUERY_DURATION a leaked body would fail with an unhandled 'error' event and end the process
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
     });
 
     it('serves linked files through the download route, with ranges', async () => {
