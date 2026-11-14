@@ -142,7 +142,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
             title: 'Describe metadata',
             description:
                 'Browses metadata of a source step by step (schemas/tables/columns, databases/containers with sampled schemas, ' +
-                'blob prefixes, Log Analytics tables, Redis key prefixes). Use path to drill down and filter (with * wildcards) to narrow.',
+                'blob prefixes, Log Analytics tables, Resource Graph tables and types, Redis key prefixes). Use path to drill down and filter (with * wildcards) to narrow.',
             inputSchema: z.object({
                 source: z.string().describe('Source name from list_sources'),
                 path: z

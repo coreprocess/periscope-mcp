@@ -9,6 +9,7 @@ export const SOURCE_TYPES = [
     'cosmos',
     'blob',
     'loganalytics',
+    'resourcegraph',
     'redis',
     'kim',
     'rest',
@@ -117,6 +118,14 @@ const schemas = {
         RESOURCE_ID: z.string().startsWith('/').optional(),
         AUTH: auth.optional(),
         DEFAULT_TIMESPAN: z.string().optional(),
+        ENDPOINT: z.string().url().optional(),
+    }),
+    resourcegraph: z.object({
+        ...common,
+        TYPE: z.literal('resourcegraph'),
+        SUBSCRIPTIONS: list.optional(),
+        MANAGEMENT_GROUPS: list.optional(),
+        AUTH: auth.optional(),
         ENDPOINT: z.string().url().optional(),
     }),
     redis: z.object({
@@ -240,6 +249,15 @@ export interface LogAnalyticsSourceConfig extends CommonSourceConfig {
     endpoint: string;
 }
 
+export interface ResourceGraphSourceConfig extends CommonSourceConfig {
+    type: 'resourcegraph';
+    /** Subscription IDs the queries cover; empty: every subscription the identity may read. */
+    subscriptions: string[];
+    managementGroups: string[];
+    /** Azure Resource Manager origin. */
+    endpoint: string;
+}
+
 export interface RedisSourceConfig extends CommonSourceConfig {
     type: 'redis';
     url: string | undefined;
@@ -287,6 +305,7 @@ export type SourceConfig =
     | CosmosSourceConfig
     | BlobSourceConfig
     | LogAnalyticsSourceConfig
+    | ResourceGraphSourceConfig
     | RedisSourceConfig
     | KimSourceConfig
     | RestSourceConfig;
@@ -437,6 +456,21 @@ export const buildSourceConfig = (
                 resourceId: r.RESOURCE_ID,
                 defaultTimespan: timespan,
                 endpoint: (r.ENDPOINT ?? 'https://api.loganalytics.io').replace(/\/+$/, ''),
+            };
+        }
+        case 'resourcegraph': {
+            const r = raw as Raw<'resourcegraph'>;
+            const subscriptions = r.SUBSCRIPTIONS ?? [];
+            const managementGroups = r.MANAGEMENT_GROUPS ?? [];
+            if (subscriptions.length > 0 && managementGroups.length > 0) {
+                throw new Error('needs at most one of SUBSCRIPTIONS or MANAGEMENT_GROUPS');
+            }
+            return {
+                ...base,
+                type: 'resourcegraph',
+                subscriptions,
+                managementGroups,
+                endpoint: new URL(r.ENDPOINT ?? 'https://management.azure.com').origin,
             };
         }
         case 'redis': {

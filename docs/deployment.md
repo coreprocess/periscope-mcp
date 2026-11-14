@@ -123,6 +123,7 @@ Read-only does not depend on the credential, but read-only credentials are a fre
 | Cosmos DB | Managed identity with *Cosmos DB Built-in Data Reader* (`cosmos_data_readers`), or the account's read-only key |
 | Blob Storage | Managed identity with *Storage Blob Data Reader*, or a SAS with `sp=rl` |
 | Log Analytics | Managed identity with *Log Analytics Reader* |
+| Resource Graph | Managed identity with *Reader* on the subscriptions in scope, plus *Security Reader* for Defender for Cloud (`securityresources`) |
 | PostgreSQL | A role with `pg_read_all_data` or per-schema `SELECT`; Entra login for the managed identity |
 | Oracle | A user with `CREATE SESSION` and `READ` grants. Add `SELECT_CATALOG_ROLE` for the precise routine analysis. Without it, user-defined routines are blocked unless allowlisted. |
 | SQL Server | A login with `db_datareader`. Add `VIEW DEFINITION` for the function inventory and `SHOWPLAN` for `explain`. A sysadmin login, `xp_cmdshell`, OLE Automation, CLR, a `TRUSTWORTHY` database or linked servers switch the source to strict mode, where user-defined functions are blocked unless allowlisted. With Azure SQL, prefer an Entra login for the managed identity (`AUTH=azure`) or a readable secondary (`READ_INTENT=true`). |

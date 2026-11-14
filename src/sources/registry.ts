@@ -10,6 +10,7 @@ import { MssqlAdapter } from './mssql/adapter.ts';
 import { OracleAdapter } from './oracle/adapter.ts';
 import { PostgresAdapter } from './postgres/adapter.ts';
 import { RedisAdapter } from './redis/adapter.ts';
+import { ResourceGraphAdapter } from './resourcegraph/adapter.ts';
 import { RestAdapter } from './rest/adapter.ts';
 
 export const createAdapter = (config: SourceConfig): SourceAdapter => {
@@ -26,6 +27,8 @@ export const createAdapter = (config: SourceConfig): SourceAdapter => {
             return new BlobAdapter(config);
         case 'loganalytics':
             return new LogAnalyticsAdapter(config);
+        case 'resourcegraph':
+            return new ResourceGraphAdapter(config);
         case 'redis':
             return new RedisAdapter(config);
         case 'kim':

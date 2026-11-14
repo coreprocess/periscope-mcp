@@ -51,7 +51,7 @@ All configuration comes from environment variables. For local use, `--env-file <
 ```bash
 PERISCOPE_SOURCE_N=3                 # number of sources; indices run 0 … N-1
 PERISCOPE_SOURCE_<i>_NAME=…          # identifier used in tool calls: [a-z0-9_-]{1,64}, unique
-PERISCOPE_SOURCE_<i>_TYPE=…          # postgres | oracle | mssql | cosmos | blob | loganalytics | redis | kim | rest
+PERISCOPE_SOURCE_<i>_TYPE=…          # postgres | oracle | mssql | cosmos | blob | loganalytics | resourcegraph | redis | kim | rest
 PERISCOPE_SOURCE_<i>_<KEY>=…
 ```
 
@@ -132,6 +132,16 @@ SQL Server 2017+, Azure SQL Database and Azure SQL Managed Instance.
 
 Authentication is always Entra (`DefaultAzureCredential`) with the role *Log Analytics Reader*.
 
+### `resourcegraph`
+
+| Key | Description |
+|---|---|
+| `SUBSCRIPTIONS` | Comma-separated subscription IDs every query covers |
+| `MANAGEMENT_GROUPS` | Alternative: comma-separated management group IDs |
+| `ENDPOINT` | Default `https://management.azure.com` (other clouds); only its origin is used |
+
+Without `SUBSCRIPTIONS` or `MANAGEMENT_GROUPS`, queries cover every subscription the identity may read. Authentication is always Entra (`DefaultAzureCredential`) with a Resource Manager token. Assign read roles only: *Reader* on the subscriptions or management groups in scope, and *Security Reader* to see Defender for Cloud (`securityresources`). Periscope sends the token to the Resource Graph query endpoint only.
+
 ### `redis`
 
 | Key | Description |
@@ -181,6 +191,7 @@ The script is trusted configuration: its own `fetch` calls, such as a sign-in, a
 | `cosmos` | `{ "@name": value }` or `[{ name, value }]` | `database`, `container` (required), `partitionKey` |
 | `blob` | not used | `container`, `tagFilter`, `include` (`metadata`, `tags`, `versions`, `snapshots`) |
 | `loganalytics` | not used | `timespan` (ISO 8601 duration or `start/end` interval) |
+| `resourcegraph` | not used | none |
 | `redis` | not used | `values` (with `SCAN`: fetch type, TTL and value of every key) |
 | `kim` | not used; literals go into the query (`PreciseNumber(1.25)`, `Instant(…)`) | `snapshotId` (read at this snapshot) |
 | `rest` | not used; the request is the query | none |

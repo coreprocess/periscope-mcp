@@ -10,6 +10,7 @@ Periscope is an MCP server that gives AI agents **strictly read-only** query acc
 | Azure Cosmos DB for NoSQL | Cosmos NoSQL query language | NDJSON (gzip) |
 | Azure Blob Storage | Glob or prefix, optional tag filter | NDJSON listing; contents referenced in place |
 | Azure Log Analytics / Application Insights | KQL | Parquet |
+| Azure Resource Graph (resources, Defender for Cloud, changes, role assignments) | KQL | NDJSON (gzip) |
 | Redis (standalone or cluster) | One read-only Redis command; `SCAN` as key export | NDJSON (gzip) |
 | KIM | Node or record query language | NDJSON (gzip); offloaded contents referenced in place |
 | Any HTTP API (`rest`) | One HTTP request: request line, headers, body | NDJSON (gzip); binary responses referenced, fetched again on read |
@@ -102,6 +103,7 @@ The full reference is in [docs/configuration.md](docs/configuration.md).
 | Cosmos DB | Only read/query operations implemented; HTTP guard on the SDK lets only `GET`/`HEAD` and query `POST`s through |
 | Blob Storage | Only list/read operations implemented; pipeline guard lets only `GET`/`HEAD` through; downloads pinned to ETag/version/snapshot |
 | Log Analytics | Query API only (it has no write operations); control commands rejected |
+| Resource Graph | Query API only (it has no write operations); its Resource Manager token is sent to that one endpoint only |
 | PostgreSQL | `READ ONLY` transaction, always rolled back; syntax-tree guard with the Postgres parser (single `SELECT`, no locking, no data-modifying CTEs); side-effect function denylist; inventory that parses view definitions and switches to strict mode when `dblink`-style functions are reachable |
 | Oracle | `SET TRANSACTION READ ONLY`, always rolled back; strict lexer (single `SELECT`, no PL/SQL, no DML/DDL keywords, no `FOR UPDATE`, no `NEXTVAL`); system package allowlist; routine inventory against autonomous transactions and dynamic SQL |
 | SQL Server | Transaction that is always rolled back; strict T-SQL lexer (single `SELECT`, no `EXEC`, no DML/DDL, no `SELECT … INTO`, no `NEXT VALUE FOR`, no remote rowsets or locking hints); function inventory against extended procedures, OLE Automation, CLR and linked servers, with strict mode for sysadmin logins and risky server settings; optional `ApplicationIntent=ReadOnly` |
