@@ -336,17 +336,23 @@ export class MssqlAdapter implements SourceAdapter {
                 requestTimeout: Math.min(remaining(context.deadline), 2_147_483_647),
             });
             r.arrayRowMode = true;
+            // the one that runs is the one an abort cancels, on the plan path as well
+            request = r;
             return r;
         };
         try {
             context.signal.addEventListener('abort', onAbort, { once: true });
+            // an abort before this point found no listener
+            context.signal.throwIfAborted();
             if (plan.explain) return await this.#explain(newRequest, plan, params, cleanup);
 
-            request = newRequest();
-            bind(request, params);
-            const rows = streamRows(request, plan.sql);
+            const statement = newRequest();
+            bind(statement, params);
+            const rows = streamRows(statement, plan.sql);
             stop = rows.stop;
             const mapped = (await rows.columns()).map(mapMssqlColumn);
+            // nobody reads the stream of an aborted query, so it would never end its transaction
+            context.signal.throwIfAborted();
             const batches = async function* (): AsyncGenerator<unknown[][]> {
                 try {
                     for (let batch = await rows.next(); batch; batch = await rows.next()) {

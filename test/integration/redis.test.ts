@@ -146,6 +146,18 @@ describe('redis source', () => {
         assert.equal(await writesSinceSave(), 0);
     });
 
+    it('hands the abort signal to the client with every command', async () => {
+        // the client refuses a command whose signal has fired, and takes a waiting one out of its queue
+        const opening = adapter.execute(await adapter.validate('HGETALL user:1', null, {}), {
+            signal: AbortSignal.abort(new Error('aborted')),
+            deadline: Date.now() + 30_000,
+            log: nullLoggers().log,
+            addCost: () => undefined,
+            fileReference: () => '',
+        });
+        await assert.rejects(opening, /aborted/i);
+    });
+
     it('runs single commands and shapes their replies', async () => {
         const hash = await harness.run(adapter, 'HGETALL user:1');
         assert.deepEqual((await harness.service.readRows(hash, 0, 10, ['field', 'value'])).rows.sort(), [

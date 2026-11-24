@@ -1,7 +1,7 @@
 # Periscope coding standards
 
 Conventions for this repository, read from the outside in: the general rules that apply
-everywhere, then the rules that keep Periscope read-only, then workflow.
+everywhere, then the rules that keep Periscope read-only and its queries cancellable, then workflow.
 
 This file is the one instruction set for every coding agent: Codex, GitHub Copilot, and Cursor
 read `AGENTS.md` directly, Claude Code reads it through the `CLAUDE.md` symlink. Reusable
@@ -58,6 +58,20 @@ The guarantee is the product. It must hold even when the configured credential c
 - Downloads are served by Periscope only, exactly as stored: never hand out storage account
   URLs or SAS tokens, never compress in transit, never serve internal files (`state.json`,
   `cancel.json`).
+
+## Cancellation
+
+A query that is cancelled, times out or is interrupted must end, and must stop at its source as far as the
+client library allows (`docs/CONCEPT.md` §6.3).
+
+- The job never waits for a source: the final status and the `query.end` audit line do not depend on a client
+  returning or honoring an abort signal.
+- An adapter passes `context.signal` to every call its client library takes one for, and tells the source to
+  stop where the library has a way (a cancel request, a break, an aborted request).
+- An adapter that holds a resource when `execute` returns (a connection, a transaction) checks the signal
+  before it returns the stream, and releases the resource in the stream's `finally`.
+- A change to how a source is cancelled comes with a test that fails without it, wherever a test can provoke
+  the situation.
 
 ## Documentation
 

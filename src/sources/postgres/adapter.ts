@@ -21,6 +21,8 @@ import { type ExtensionTypes, type FieldDescription, mapField, SESSION_SETTINGS,
 const BATCH_ROWS = 5_000;
 const ENTRA_SCOPE = 'https://ossrdbms-aad.database.windows.net/.default';
 const INVENTORY_TTL_MS = 10 * 60_000;
+/** How long a server may take to answer a cancellation before its connection is closed instead. */
+const CANCEL_GRACE_MS = 5_000;
 
 const optionsSchema = z
     .object({
@@ -103,27 +105,51 @@ export class PostgresAdapter implements SourceAdapter {
         return this.#pool;
     }
 
+    /**
+     * Takes a client from the pool. While it is checked out the pool does not listen for its errors, and a
+     * connection that breaks then (a reset, a timeout on a dead path) emits an error nobody handles, which ends
+     * the process. The running statement fails with the same error; here it is logged and passed to `lost`. The
+     * returned function takes the listener off again; call it before the client goes back.
+     */
+    async #checkout(lost?: (error: Error) => void): Promise<{ client: pg.PoolClient; unwatch: () => void }> {
+        const client = await this.#poolOrThrow.connect();
+        const onError = (error: Error): void => {
+            this.#log?.warn({ err: error, source: this.config.name }, 'postgres connection error');
+            lost?.(error);
+        };
+        client.on('error', onError);
+        return { client, unwatch: () => client.removeListener('error', onError) };
+    }
+
     /** Runs `fn` in a REPEATABLE READ READ ONLY transaction that is always rolled back. */
     async #readOnly<T>(fn: (client: pg.PoolClient) => Promise<T>, timeoutMs = 60_000): Promise<T> {
-        const client = await this.#poolOrThrow.connect();
+        const { client, unwatch } = await this.#checkout();
         try {
             await client.query(this.#session);
             await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
             await client.query(`SET LOCAL statement_timeout = ${Math.ceil(timeoutMs)}`);
             return await fn(client);
         } finally {
-            await this.#release(client);
+            await this.#release(client, false, (error) => {
+                unwatch();
+                client.release(error);
+            });
         }
     }
 
-    async #release(client: pg.PoolClient, destroy = false): Promise<void> {
+    /** Rolls back and returns the client through `giveBack`; a client that cannot roll back is destroyed. */
+    async #release(
+        client: pg.PoolClient,
+        destroy = false,
+        giveBack: (error?: Error | boolean) => void = (error) => client.release(error)
+    ): Promise<void> {
         try {
             await client.query('ROLLBACK');
             // Session-level advisory locks survive ROLLBACK.
             await client.query('SELECT pg_advisory_unlock_all()');
-            client.release();
+            giveBack();
         } catch (error) {
-            client.release(destroy ? true : (error as Error));
+            giveBack(destroy ? true : (error as Error));
         }
     }
 
@@ -216,22 +242,59 @@ export class PostgresAdapter implements SourceAdapter {
     async execute(prepared: PreparedQuery, context: ExecutionContext): Promise<ResultStream> {
         const { sql } = prepared.plan as Plan;
         const pool = this.#poolOrThrow;
-        const client = await pool.connect();
+        // a connection that is lost leaves the pool at once: nothing can be closed or rolled back on it any more
+        const { client, unwatch } = await this.#checkout((error) => giveBack(error));
         const pid = (client as unknown as { processID: number }).processID;
-        const onAbort = (): void => {
-            pool.query('SELECT pg_cancel_backend($1)', [pid]).catch(() => undefined);
-        };
         let cursor: Cursor | undefined;
+        let released = false;
+        let closing: NodeJS.Timeout | undefined;
+        const gone = Promise.withResolvers<void>();
+        /** Returns the client to the pool, once. */
+        const giveBack = (error?: Error | boolean): void => {
+            if (released) return;
+            released = true;
+            clearTimeout(closing);
+            unwatch();
+            client.release(error);
+            gone.resolve();
+        };
+        let cancelling: Promise<unknown> | undefined;
+        const onAbort = (): void => {
+            // With a time limit of its own (pg reads `query_timeout` from the query, its types do not list it):
+            // on a server that no longer answers, the cancellation would keep a second connection.
+            const cancel: pg.QueryConfig & { query_timeout: number } = {
+                text: 'SELECT pg_cancel_backend($1)',
+                values: [pid],
+                query_timeout: CANCEL_GRACE_MS,
+            };
+            cancelling = pool.query(cancel).catch(() => undefined);
+            // A server that does not answer (a dead network path) would keep the connection, and its place in
+            // the pool, for good: the connection is closed then, which ends whatever still waits on it.
+            closing = setTimeout(() => giveBack(true), CANCEL_GRACE_MS);
+        };
         const cleanup = async (): Promise<void> => {
             context.signal.removeEventListener('abort', onAbort);
-            await new Promise<void>((resolve) => (cursor ? cursor.close(() => resolve()) : resolve()));
-            await this.#release(client);
+            if (released) return;
+            // Closing the cursor waits for the server's answer to the statement that just ended, so it comes
+            // first; on a connection that is lost meanwhile it would wait for good.
+            const closed = new Promise<void>((resolve) => (cursor ? cursor.close(() => resolve()) : resolve()));
+            await Promise.race([closed, gone.promise]);
+            // The cancellation names the session by its process id and may still wait for a connection of its
+            // own. The client goes back only once it has run: it would otherwise hit the statement of whoever
+            // gets this client next.
+            await Promise.race([cancelling, gone.promise]);
+            if (released) return;
+            await this.#release(client, false, giveBack);
         };
         try {
+            context.signal.addEventListener('abort', onAbort, { once: true });
+            // an abort before this point found no listener
+            context.signal.throwIfAborted();
             await client.query(this.#session);
             await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
             await client.query(`SET LOCAL statement_timeout = ${Math.ceil(remaining(context.deadline))}`);
-            context.signal.addEventListener('abort', onAbort, { once: true });
+            // a cancellation that arrived between the statements above found nothing to cancel
+            context.signal.throwIfAborted();
             cursor = client.query(
                 new Cursor(sql, prepared.params as unknown[], {
                     rowMode: 'array',
@@ -256,6 +319,8 @@ export class PostgresAdapter implements SourceAdapter {
             );
             const convert = (rows: unknown[][]): unknown[][] =>
                 rows.map((row) => row.map((value, i) => (mapped[i]?.convert ? mapped[i].convert(value) : value)));
+            // nobody reads the stream of an aborted query, so it would never release the connection
+            context.signal.throwIfAborted();
             const batches = async function* (): AsyncGenerator<unknown[][]> {
                 try {
                     if (first.rows.length > 0) yield convert(first.rows);

@@ -89,6 +89,22 @@ describe('blob source', () => {
         assert.match(String(window.rows[0]?.[3]), /^files\/[A-Za-z0-9_-]{22}\/e~/);
     });
 
+    it('hands the abort signal to the client with every request', async () => {
+        const prepared = await adapter.validate('logs/**', undefined, {});
+        const stream = await adapter.execute(prepared, {
+            signal: AbortSignal.abort(new Error('aborted')),
+            deadline: Date.now() + 30_000,
+            log: nullLoggers().log,
+            addCost: () => undefined,
+            fileReference: () => '',
+        });
+        const read = async (): Promise<void> => {
+            for await (const _ of stream.batches) assert.fail('a page arrived for an aborted query');
+        };
+        // without the signal the request is sent, and the listing ends quietly at the adapter's own check
+        await assert.rejects(read(), { name: 'AbortError' });
+    });
+
     it('reads text by line windows and images inline, pinned to the listed version', async () => {
         const resultId = await harness.run(adapter, 'logs/**');
         const window = await harness.service.readRows(resultId, 0, 10, ['name', 'file']);

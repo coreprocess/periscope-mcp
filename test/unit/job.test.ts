@@ -3,11 +3,17 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
+import { pino } from 'pino';
 import type { SourceConfig } from '../../src/config/sources.ts';
-import { createLoggers } from '../../src/core/logger.ts';
+import { newResultId } from '../../src/core/ids.ts';
+import { createLoggers, nullLoggers } from '../../src/core/logger.ts';
 import { scalarColumn } from '../../src/results/parquet/columns.ts';
+import { ResultService } from '../../src/results/service.ts';
 import { FilesystemResultStore } from '../../src/results/store/filesystem.ts';
-import { MANIFEST_PATH, type Manifest } from '../../src/results/types.ts';
+import { putJson } from '../../src/results/store/store.ts';
+import { type JobState, MANIFEST_PATH, type Manifest, STATE_PATH } from '../../src/results/types.ts';
 import type {
     ExecutionContext,
     PreparedQuery,
@@ -225,6 +231,160 @@ describe('result jobs', () => {
         }
     });
 
+    /** A source whose client neither answers nor reacts to the abort signal. */
+    const deaf = (): FakeAdapter =>
+        new FakeAdapter(
+            () => ({
+                format: 'ndjson',
+                batches: (async function* (): AsyncGenerator<unknown[]> {
+                    yield [{ i: 0 }];
+                    await new Promise(() => undefined);
+                })(),
+            }),
+            { maxQueryDurationMs: 60_000 }
+        );
+
+    it('ends a cancelled query at once, whether or not its source reacts', async () => {
+        const adapter = deaf();
+        const resultId = await harness.service.start(adapter, await adapter.validate('q'), testCaller);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const started = Date.now();
+        const cancelled = await harness.service.cancel(resultId);
+        assert.equal(cancelled.manifest.status, 'cancelled');
+        assert.ok(Date.now() - started < 1_000);
+        assert.equal((await storedManifest(harness.dir, resultId)).status, 'cancelled');
+    });
+
+    it('holds the maximum duration against a source that does not react', async () => {
+        const adapter = new FakeAdapter(
+            () => ({
+                format: 'ndjson',
+                batches: (async function* (): AsyncGenerator<unknown[]> {
+                    await new Promise(() => undefined);
+                })(),
+            }),
+            { maxQueryDurationMs: 300 }
+        );
+        const started = Date.now();
+        const { manifest } = await finish(await harness.run(adapter, 'q'));
+        assert.equal(manifest.status, 'failed');
+        assert.equal(manifest.error?.code, 'timeout');
+        assert.ok(Date.now() - started < 2_000);
+    });
+
+    it('releases what a source holds when the query is aborted between two batches', async () => {
+        let released = false;
+        const adapter = new FakeAdapter(() => ({
+            format: 'ndjson',
+            batches: (async function* (): AsyncGenerator<unknown[]> {
+                try {
+                    for (let i = 0; ; i++) {
+                        yield [{ i }];
+                        await new Promise((resolve) => setTimeout(resolve, 20));
+                    }
+                } finally {
+                    released = true;
+                }
+            })(),
+        }));
+        const resultId = await harness.service.start(adapter, await adapter.validate('q'), testCaller);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.equal((await harness.service.cancel(resultId)).manifest.status, 'cancelled');
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.equal(released, true);
+    });
+
+    it('does not ask an aborted source for another batch', async () => {
+        // the abort arrives while the job stores the first part: the source has nothing running that it could stop
+        const slow = await createResultHarness({ store: (dir) => new SlowManifestStore(dir) });
+        try {
+            let resumed = false;
+            let finished = false;
+            const adapter = new FakeAdapter(() => ({
+                format: 'ndjson',
+                batches: (async function* (): AsyncGenerator<unknown[]> {
+                    try {
+                        yield Array.from({ length: 5000 }, (_, i) => ({ i }));
+                        resumed = true;
+                        await new Promise(() => undefined);
+                    } finally {
+                        finished = true;
+                    }
+                })(),
+            }));
+            const resultId = await slow.service.start(adapter, await adapter.validate('q'), testCaller);
+            // the first part is written by now and its manifest is on its slow way into the store
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            assert.equal(resumed, false, 'the abort comes while the job is still storing the part');
+            assert.equal((await slow.service.cancel(resultId)).manifest.status, 'cancelled');
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            assert.equal(resumed, false);
+            assert.equal(finished, true, 'the source was told to release what it holds');
+        } finally {
+            await slow.dispose();
+        }
+    });
+
+    it('holds the limit per user for queries that start at the same moment', async () => {
+        const caller = { ...testCaller, oid: 'parallel-test-user' };
+        const adapter = new FakeAdapter(() => ({ format: 'ndjson', batches: documents(1_000_000, 1000)() }));
+        const prepared = await adapter.validate('q');
+        const started = await Promise.allSettled(
+            Array.from({ length: 12 }, () => harness.service.start(adapter, prepared, caller))
+        );
+        const accepted = started.flatMap((outcome) => (outcome.status === 'fulfilled' ? [outcome.value] : []));
+        assert.equal(accepted.length, 8);
+        for (const resultId of accepted) await harness.service.cancel(resultId);
+    });
+
+    it('fails and audits a query on shutdown, whether or not its source reacts', async () => {
+        const lines: Record<string, unknown>[] = [];
+        const audit = pino(
+            { level: 'info', messageKey: 'event', base: null, timestamp: false },
+            { write: (line: string) => void lines.push(JSON.parse(line)) }
+        );
+        const stopping = await createResultHarness({ loggers: { log: pino({ level: 'silent' }), audit } });
+        try {
+            const adapter = deaf();
+            const resultId = await stopping.service.start(adapter, await adapter.validate('q'), testCaller);
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            const started = Date.now();
+            await stopping.service.shutdown();
+            assert.ok(Date.now() - started < 2_000, 'the shutdown does not wait for the source');
+            const stored = await storedManifest(stopping.dir, resultId);
+            assert.equal(stored.status, 'failed');
+            assert.match(stored.error?.message ?? '', /restarted .* run the query again/);
+            const end = lines.find((line) => line.event === 'query.end');
+            assert.deepEqual([end?.resultId, end?.status, end?.error], [resultId, 'failed', 'internal']);
+        } finally {
+            await stopping.dispose();
+        }
+    });
+
+    it('lets go of every batch once it is written', async () => {
+        // an export must not grow with its result: no batch may stay reachable while later ones are read
+        setFlagsFromString('--expose-gc');
+        const collect = runInNewContext('gc') as () => void;
+        const batches: WeakRef<unknown[]>[] = [];
+        let released = 0;
+        const adapter = new FakeAdapter(() => ({
+            format: 'ndjson',
+            batches: (async function* () {
+                for (let i = 0; i < 40; i++) {
+                    const batch = [{ i, text: 'x'.repeat(1000) }];
+                    batches.push(new WeakRef(batch));
+                    yield batch;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                collect();
+                released = batches.slice(0, 30).filter((batch) => batch.deref() === undefined).length;
+            })(),
+        }));
+        const { manifest } = await finish(await harness.run(adapter, 'q'));
+        assert.equal(manifest.status, 'succeeded');
+        assert.equal(released, 30);
+    });
+
     it('reports source errors and keeps partial data', async () => {
         const adapter = new FakeAdapter(() => ({
             format: 'parquet',
@@ -275,6 +435,288 @@ describe('result jobs', () => {
         } finally {
             await audited.dispose();
             await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('closes and audits a query whose replica died, once its heartbeat is stale', async () => {
+        const lines: Record<string, unknown>[] = [];
+        const audit = pino(
+            { level: 'info', messageKey: 'event', base: null, timestamp: false },
+            { write: (line: string) => void lines.push(JSON.parse(line)) }
+        );
+        const survivor = await createResultHarness({ loggers: { log: pino({ level: 'silent' }), audit } });
+        try {
+            // a result as a killed replica leaves it: running, with one part, and nobody to finish it
+            const resultId = newResultId();
+            const createdAt = new Date(Date.now() - 1_200_000).toISOString();
+            const manifest: Manifest = {
+                version: 1,
+                resultId,
+                source: 'fake',
+                status: 'running',
+                format: 'ndjson',
+                compression: 'gzip',
+                rowCount: null,
+                bytes: 100,
+                schema: { columns: [] },
+                files: [{ path: 'part-0000.ndjson.gz', rowStart: 0, rowCount: 7, bytes: 100, sha256: '', index: '' }],
+                createdAt,
+                expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            };
+            const state: JobState = {
+                version: 1,
+                resultId,
+                source: 'fake',
+                sourceType: 'redis',
+                creator: { oid: 'user-of-the-dead-replica' },
+                queryHash: 'hash',
+                createdAt,
+                heartbeatAt: new Date(Date.now() - 60_000).toISOString(),
+                status: 'running',
+                cancelRequested: false,
+                progress: { rows: 7, bytes: 100, files: 1 },
+                stats: { elapsedMs: 60_000 },
+            };
+            await putJson(survivor.service.store, `${resultId}/${STATE_PATH}`, state);
+            await putJson(survivor.service.store, `${resultId}/${MANIFEST_PATH}`, manifest);
+
+            assert.equal((await survivor.service.snapshot(resultId)).manifest.status, 'failed');
+            assert.equal((await storedManifest(survivor.dir, resultId)).status, 'running', 'reading stores nothing');
+            // a heartbeat of a minute ago may be a replica that is only slow: readers take it as failed, the
+            // sweep does not yet overwrite what that replica would still store
+            await survivor.service.sweep();
+            assert.equal((await storedManifest(survivor.dir, resultId)).status, 'running');
+            assert.deepEqual(lines, []);
+
+            state.heartbeatAt = new Date(Date.now() - 600_000).toISOString();
+            await putJson(survivor.service.store, `${resultId}/${STATE_PATH}`, state);
+            await survivor.service.sweep();
+            const stored = await storedManifest(survivor.dir, resultId);
+            assert.equal(stored.status, 'failed');
+            assert.equal(stored.rowCount, 7);
+            assert.deepEqual(stored.error, {
+                code: 'internal',
+                message: 'The replica running this query stopped; run the query again',
+                partial: true,
+            });
+            const end = {
+                event: 'query.end',
+                level: 30,
+                resultId,
+                source: 'fake',
+                user: 'user-of-the-dead-replica',
+                status: 'failed',
+                rows: 7,
+                bytes: 100,
+                elapsedMs: 60_000,
+                error: 'internal',
+            };
+            assert.deepEqual(lines, [end]);
+            await survivor.service.sweep();
+            assert.deepEqual(lines, [end], 'a closed result is not closed again');
+        } finally {
+            await survivor.dispose();
+        }
+    });
+
+    it('sweeps only what has expired, and keeps what it cannot read', async () => {
+        /** A store whose reads of one result fail, as during an outage. */
+        class FlakyStore extends FilesystemResultStore {
+            unreadable = '';
+            override async get(path: string): Promise<Buffer | undefined> {
+                if (this.unreadable && path.startsWith(this.unreadable)) throw new Error('store unavailable');
+                return super.get(path);
+            }
+        }
+        const stores: FlakyStore[] = [];
+        const sweeping = await createResultHarness({
+            store: (dir) => {
+                const store = new FlakyStore(dir);
+                stores.push(store);
+                return store;
+            },
+        });
+        try {
+            const store = stores[0] as FlakyStore;
+            const now = Date.now();
+            const manifestOf = (resultId: string, expiresAt: number): Manifest => ({
+                version: 1,
+                resultId,
+                source: 'fake',
+                status: 'succeeded',
+                format: 'ndjson',
+                rowCount: 0,
+                bytes: 0,
+                schema: { columns: [] },
+                files: [],
+                createdAt: new Date(now - 7_200_000).toISOString(),
+                expiresAt: new Date(expiresAt).toISOString(),
+            });
+            const stateOf = (resultId: string, heartbeatAt: number): JobState => ({
+                version: 1,
+                resultId,
+                source: 'fake',
+                sourceType: 'redis',
+                creator: { oid: 'someone' },
+                queryHash: 'hash',
+                createdAt: new Date(heartbeatAt).toISOString(),
+                heartbeatAt: new Date(heartbeatAt).toISOString(),
+                status: 'queued',
+                cancelRequested: false,
+                progress: { rows: 0, bytes: 0, files: 0 },
+                stats: { elapsedMs: 0 },
+            });
+            const [expired, unreadable, starting, leftover, abandoned, cutOff] = Array.from(
+                { length: 6 },
+                newResultId
+            ) as [string, string, string, string, string, string];
+            await putJson(store, `${expired}/${MANIFEST_PATH}`, manifestOf(expired, now - 1000));
+            // expired as well, but its manifest cannot be read during this sweep
+            await putJson(store, `${unreadable}/${MANIFEST_PATH}`, manifestOf(unreadable, now - 1000));
+            // another replica has stored the state of a query and not yet its manifest
+            await putJson(store, `${starting}/${STATE_PATH}`, stateOf(starting, now));
+            // what an interrupted deletion leaves: files without a manifest, with an old state or none
+            await store.put(`${leftover}/part-0000.ndjson.gz`, 'rest');
+            await putJson(store, `${abandoned}/${STATE_PATH}`, stateOf(abandoned, now - 2 * 3_600_000));
+
+            const left = async (): Promise<string[]> => {
+                const ids: string[] = [];
+                for await (const id of store.listResults()) ids.push(id);
+                return ids.sort();
+            };
+            // a manifest cut off by a crash, long ago: it will never read, so it does not stay for good
+            await store.put(`${cutOff}/${MANIFEST_PATH}`, '{"version":1,"resultId"');
+
+            store.unreadable = unreadable;
+            assert.equal(await sweeping.service.sweep(), 4);
+            assert.deepEqual(await left(), [starting, unreadable].sort());
+
+            store.unreadable = '';
+            assert.equal(await sweeping.service.sweep(), 1, 'the next sweep reads it and finds it expired');
+            assert.deepEqual(await left(), [starting]);
+        } finally {
+            await sweeping.dispose();
+        }
+    });
+
+    it('interrupts a query that is just starting when it shuts down, and waits for its outcome', async () => {
+        const lines: Record<string, unknown>[] = [];
+        const audit = pino(
+            { level: 'info', messageKey: 'event', base: null, timestamp: false },
+            { write: (line: string) => void lines.push(JSON.parse(line)) }
+        );
+        // the store is slow, so the start is still storing the new result when the shutdown begins
+        const stopping = await createResultHarness({
+            loggers: { log: pino({ level: 'silent' }), audit },
+            store: (dir) => new SlowManifestStore(dir),
+        });
+        try {
+            let executed = false;
+            const adapter = new FakeAdapter(() => {
+                executed = true;
+                return { format: 'ndjson', batches: documents(3)() };
+            });
+            const starting = stopping.service.start(adapter, await adapter.validate('q'), testCaller);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            await stopping.service.shutdown();
+
+            const resultId = await starting;
+            const stored = await storedManifest(stopping.dir, resultId);
+            assert.equal(stored.status, 'failed', 'the outcome is stored when the shutdown returns');
+            assert.match(stored.error?.message ?? '', /restarted .* run the query again/);
+            assert.equal(executed, false, 'the source was never asked');
+            assert.deepEqual(
+                lines.map((line) => [line.event, line.status]),
+                [
+                    ['query.start', undefined],
+                    ['query.end', 'failed'],
+                ]
+            );
+        } finally {
+            await stopping.dispose();
+        }
+    });
+
+    it('ends a query in an orderly way when the store fails as it starts', async () => {
+        /** A store whose third write fails: the first of the two that mark the query as running. */
+        class FailingOnce extends FilesystemResultStore {
+            #puts = 0;
+            override async put(path: string, body: Buffer | string): Promise<void> {
+                if (++this.#puts === 3) throw new Error('store unavailable');
+                await super.put(path, body);
+            }
+        }
+        const lines: Record<string, unknown>[] = [];
+        const audit = pino(
+            { level: 'info', messageKey: 'event', base: null, timestamp: false },
+            { write: (line: string) => void lines.push(JSON.parse(line)) }
+        );
+        const failing = await createResultHarness({
+            loggers: { log: pino({ level: 'silent' }), audit },
+            store: (dir) => new FailingOnce(dir),
+        });
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => void unhandled.push(reason);
+        process.on('unhandledRejection', onUnhandled);
+        try {
+            const adapter = new FakeAdapter(() => ({ format: 'ndjson', batches: documents(3)() }));
+            const { manifest } = await failing.service.snapshot(await failing.run(adapter, 'q'));
+            assert.equal(manifest.status, 'failed');
+            assert.equal((await storedManifest(failing.dir, manifest.resultId)).status, 'failed');
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            assert.deepEqual(unhandled, []);
+            assert.deepEqual(
+                lines.map((line) => [line.event, line.status]),
+                [
+                    ['query.start', undefined],
+                    ['query.end', 'failed'],
+                ]
+            );
+        } finally {
+            process.off('unhandledRejection', onUnhandled);
+            await failing.dispose();
+        }
+    });
+
+    it('waits for the replica that runs a query to cancel it', async () => {
+        // two replicas on one store: the second one cancels, the first one runs the query and looks for markers
+        const first = await createResultHarness();
+        const second = new ResultService({
+            store: new FilesystemResultStore(first.dir),
+            storeDescriptor: { kind: 'filesystem', dir: first.dir },
+            retentionMs: 3_600_000,
+            partBytes: 100 * 1024 * 1024,
+            maxConcurrentQueriesPerUser: 8,
+            read: { maxRows: 500, maxBytes: 65_536, maxValueChars: 2000 },
+            loggers: nullLoggers(),
+            signer: first.signer,
+        });
+        try {
+            const adapter = new FakeAdapter(() => ({ format: 'ndjson', batches: documents(1_000_000, 100)() }));
+            const resultId = await first.service.start(adapter, await adapter.validate('q'), testCaller);
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            const cancelling = second.cancel(resultId);
+            // the first replica finds the marker some seconds later, as on its five-second timer
+            await new Promise((resolve) => setTimeout(resolve, 3_000));
+            await first.service.pollRemoteCancellations();
+            assert.equal((await cancelling).manifest.status, 'cancelled');
+        } finally {
+            await second.shutdown();
+            await first.dispose();
+        }
+    });
+
+    it('takes no query once it shuts down', async () => {
+        const closing = await createResultHarness();
+        try {
+            await closing.service.shutdown();
+            const adapter = new FakeAdapter(() => ({ format: 'ndjson', batches: documents(3)() }));
+            await assert.rejects(
+                closing.service.start(adapter, await adapter.validate('q'), testCaller),
+                /shutting down/
+            );
+        } finally {
+            await closing.dispose();
         }
     });
 

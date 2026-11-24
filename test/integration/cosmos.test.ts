@@ -10,7 +10,6 @@ import { guardedCosmosHttpClient } from '../../src/sources/cosmos/guard.ts';
 import { createResultHarness, type ResultHarness } from '../helpers/results.ts';
 
 const KEY = 'C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU9DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==';
-const ENDPOINT = 'http://127.0.0.1:8081/';
 
 const waitForEmulator = async (client: CosmosClient): Promise<void> => {
     for (let i = 0; i < 90; i++) {
@@ -26,17 +25,20 @@ const waitForEmulator = async (client: CosmosClient): Promise<void> => {
 
 describe('cosmos source', () => {
     let container: StartedTestContainer;
+    let endpoint: string;
     let admin: CosmosClient;
     let adapter: CosmosAdapter;
     let harness: ResultHarness;
 
     before(async () => {
         container = await new GenericContainer('mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-preview')
-            .withExposedPorts({ container: 8081, host: 8081 })
+            .withExposedPorts(8081)
             .withCommand(['--protocol', 'http'])
             .start();
+        // any free host port: the clients below do not follow the endpoint the emulator names for itself
+        endpoint = `http://127.0.0.1:${container.getMappedPort(8081)}/`;
         admin = new CosmosClient({
-            endpoint: ENDPOINT,
+            endpoint,
             key: KEY,
             connectionPolicy: { enableEndpointDiscovery: false },
         });
@@ -62,7 +64,7 @@ describe('cosmos source', () => {
             description: undefined,
             maxQueryDurationMs: 60_000,
             maxResultBytes: 1024 ** 3,
-            endpoint: ENDPOINT,
+            endpoint,
             key: KEY,
             azureAuth: false,
             database: 'main',
@@ -116,7 +118,7 @@ describe('cosmos source', () => {
 
     it('blocks every write on the wire, even when called directly on the SDK', async () => {
         const guarded = new CosmosClient({
-            endpoint: ENDPOINT,
+            endpoint,
             key: KEY,
             httpClient: guardedCosmosHttpClient('docs'),
             connectionPolicy: { enableEndpointDiscovery: false },

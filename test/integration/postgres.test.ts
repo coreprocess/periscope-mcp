@@ -149,6 +149,60 @@ describe('postgres source', () => {
         assert.equal(await checksum(), before);
     });
 
+    it('gives its connection back when a query is aborted before its stream is read', async () => {
+        // more often than the pool has connections: one that stays behind per cancellation would exhaust it
+        const prepared = await adapter.validate('SELECT a.id FROM orders a CROSS JOIN orders b', [], {});
+        for (let i = 0; i < 12; i++) {
+            // every other run is aborted before it starts, the rest while it waits for its connection
+            const controller = new AbortController();
+            if (i % 2 === 0) controller.abort(new Error('aborted'));
+            const opening = adapter.execute(prepared, {
+                signal: controller.signal,
+                deadline: Date.now() + 30_000,
+                log: nullLoggers().log,
+                addCost: () => undefined,
+                fileReference: () => '',
+            });
+            controller.abort(new Error('aborted'));
+            await assert.rejects(opening, /aborted/);
+        }
+        const resultId = await harness.run(adapter, 'SELECT count(*)::int AS n FROM orders');
+        assert.equal((await harness.service.snapshot(resultId)).manifest.status, 'succeeded');
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        const busy = await admin.query(
+            "SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = 'periscope-mcp' AND state <> 'idle'"
+        );
+        assert.equal(busy.rows[0].n, 0, 'no session is left in a transaction or a statement');
+    });
+
+    it('survives the loss of a connection that is in use', async () => {
+        // the pool does not listen on a client it has handed out: unhandled, its error would end the process
+        const sql = 'SELECT pg_sleep(30)';
+        const resultId = await harness.service.start(
+            adapter,
+            { query: sql, params: [], options: {}, plan: { sql } },
+            { oid: 'sleeper', roles: new Set() }
+        );
+        let terminated = 0;
+        for (let i = 0; i < 50 && terminated === 0; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            const result = await admin.query(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'periscope-mcp' AND query LIKE '%pg_sleep%' AND state = 'active'"
+            );
+            terminated = result.rowCount ?? 0;
+        }
+        assert.equal(terminated, 1);
+        const lost = Date.now();
+        let snapshot = await harness.service.snapshot(resultId, 10_000);
+        while (snapshot.manifest.status === 'running') snapshot = await harness.service.snapshot(resultId, 10_000);
+        assert.equal(snapshot.manifest.status, 'failed');
+        assert.equal(snapshot.manifest.error?.code, 'source_error');
+        assert.ok(Date.now() - lost < 5_000, 'the query fails with its connection, not at its maximum duration');
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const after = await harness.run(adapter, 'SELECT count(*)::int AS n FROM orders');
+        assert.equal((await harness.service.snapshot(after)).manifest.status, 'succeeded');
+    });
+
     it('exports a query with exact types into parts and reads windows', async () => {
         const resultId = await harness.run(adapter, 'SELECT * FROM orders ORDER BY id');
         const { manifest } = await harness.service.snapshot(resultId);

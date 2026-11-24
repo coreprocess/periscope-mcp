@@ -5,9 +5,9 @@ import type { Loggers } from '../core/logger.ts';
 import type { Signer } from '../core/signing.ts';
 import type { PreparedQuery, SourceAdapter } from '../sources/adapter.ts';
 import { encodeFileReference } from './files.ts';
-import { Job } from './job.ts';
+import { concludeResult, Job } from './job.ts';
 import type { StoreDescriptor } from './parquet/protocol.ts';
-import { getJson, type ResultStore } from './store/store.ts';
+import { getJson, putJson, type ResultStore } from './store/store.ts';
 import type { JobState, Manifest } from './types.ts';
 import { CANCEL_PATH, MANIFEST_PATH, STATE_PATH } from './types.ts';
 import { type RowWindow, readWindow, type WindowLimits } from './window.ts';
@@ -33,8 +33,24 @@ export interface ResultServiceOptions {
 const STALE_MS = 30_000;
 const POLL_MS = 500;
 export const MAX_WAIT_MS = 10_000;
+/** How long `cancel` waits for the query to end. A local job ends at once; one of another replica when it polls. */
+const CANCEL_WAIT_MS = 2_000;
+/** The same for a query of another replica, which looks for cancel markers every 5 s. */
+const REMOTE_CANCEL_WAIT_MS = 7_000;
+/**
+ * How old a heartbeat is before a sweep stores the query as failed. Far beyond the 30 s after which readers take
+ * it as failed: storing it overwrites what a replica that is only slow would still write.
+ */
+const CLOSE_ORPHAN_MS = 5 * 60_000;
 /** How long a shutdown waits for interrupted jobs to store their final manifest. */
 const SHUTDOWN_WAIT_MS = 5_000;
+
+const REPLICA_STOPPED = new PeriscopeError('internal', 'The replica running this query stopped; run the query again');
+
+/** A query nobody runs any more: its replica died without storing how the query ended. */
+const isOrphaned = (manifest: Manifest, state: JobState, staleMs = STALE_MS): boolean =>
+    (manifest.status === 'running' || manifest.status === 'queued') &&
+    Date.now() - Date.parse(state.heartbeatAt) > staleMs;
 
 export interface ResultSnapshot {
     manifest: Manifest;
@@ -49,8 +65,8 @@ export interface ResultSnapshot {
 export class ResultService {
     readonly #options: ResultServiceOptions;
     readonly #jobs = new Map<string, Job>();
-    readonly #running = new Map<string, number>();
     readonly #runs = new Set<Promise<void>>();
+    #closing = false;
 
     constructor(options: ResultServiceOptions) {
         this.#options = options;
@@ -61,7 +77,15 @@ export class ResultService {
     }
 
     async start(adapter: SourceAdapter, prepared: PreparedQuery, caller: Caller): Promise<string> {
-        const active = this.#running.get(caller.oid) ?? 0;
+        if (this.#closing) {
+            throw new PeriscopeError('internal', 'Periscope is shutting down; run the query again');
+        }
+        // counted from the jobs themselves: a query stops counting the moment it has ended, not some time after
+        let active = 0;
+        for (const job of this.#jobs.values()) {
+            const { status } = job.manifest;
+            if (job.state.creator.oid === caller.oid && (status === 'running' || status === 'queued')) active++;
+        }
         if (active >= this.#options.maxConcurrentQueriesPerUser) {
             throw new PeriscopeError(
                 'limit_exceeded',
@@ -109,37 +133,50 @@ export class ResultService {
             log,
             fileReference: (id, reference) => encodeFileReference(this.#options.signer, id, reference),
         });
-        await job.persist();
+        // Known to the service before the first await: a start that runs at the same time counts it against the
+        // user's limit, and a shutdown reaches it, interrupts it and waits until its outcome is stored.
         this.#jobs.set(resultId, job);
-        this.#running.set(caller.oid, active + 1);
+        const ended = Promise.withResolvers<void>();
+        this.#runs.add(ended.promise);
+        const settle = (): void => {
+            this.#runs.delete(ended.promise);
+            ended.resolve();
+        };
+        await job.persist().catch((error: unknown) => {
+            this.#jobs.delete(resultId);
+            settle();
+            throw error;
+        });
         const deadline = Date.now() + config.maxQueryDurationMs;
         const context = job.context(deadline, log);
         this.#options.loggers.audit.info(
             { resultId, source: config.name, user: caller.oid, queryHash: state.queryHash },
             'query.start'
         );
-        const run = job
+        void job
             .run(() => adapter.execute(prepared, context), deadline)
             .finally(() => {
-                this.#runs.delete(run);
-                this.#running.set(caller.oid, Math.max((this.#running.get(caller.oid) ?? 1) - 1, 0));
-                this.#options.loggers.audit.info(
-                    {
-                        resultId,
-                        source: config.name,
-                        user: caller.oid,
-                        status: job.manifest.status,
-                        rows: job.manifest.rowCount,
-                        bytes: job.manifest.bytes,
-                        elapsedMs: job.state.stats.elapsedMs,
-                        ...(job.manifest.error ? { error: job.manifest.error.code } : {}),
-                    },
-                    'query.end'
-                );
+                this.#auditEnd(job.manifest, job.state);
                 setTimeout(() => this.#jobs.delete(resultId), 60_000).unref();
+                settle();
             });
-        this.#runs.add(run);
         return resultId;
+    }
+
+    #auditEnd(manifest: Manifest, state: JobState): void {
+        this.#options.loggers.audit.info(
+            {
+                resultId: manifest.resultId,
+                source: manifest.source,
+                user: state.creator.oid,
+                status: manifest.status,
+                rows: manifest.rowCount,
+                bytes: manifest.bytes,
+                elapsedMs: state.stats.elapsedMs,
+                ...(manifest.error ? { error: manifest.error.code } : {}),
+            },
+            'query.end'
+        );
     }
 
     async #load(resultId: string): Promise<ResultSnapshot> {
@@ -151,18 +188,8 @@ export class ResultService {
             getJson<JobState>(this.#options.store, `${resultId}/${STATE_PATH}`),
         ]);
         if (!manifest) throw new PeriscopeError('not_found', `Unknown or deleted result '${resultId}'`);
-        if (
-            state &&
-            (manifest.status === 'running' || manifest.status === 'queued') &&
-            Date.now() - Date.parse(state.heartbeatAt) > STALE_MS
-        ) {
-            manifest.status = 'failed';
-            manifest.error = {
-                code: 'internal',
-                message: 'The replica running this query stopped; run the query again',
-                partial: manifest.files.length > 0,
-            };
-        }
+        // readers learn it at once; the next sweep stores it
+        if (state && isOrphaned(manifest, state)) concludeResult(manifest, state, REPLICA_STOPPED);
         return { manifest, state };
     }
 
@@ -212,22 +239,66 @@ export class ResultService {
                 await this.#options.store.put(`${resultId}/${CANCEL_PATH}`, '{}\n', 'application/json');
             }
         }
-        return this.snapshot(resultId, 2_000);
+        // The answer carries the outcome: a query cancelled as it started first turns to running, which is a
+        // status change too, so the wait goes on until the query has ended.
+        const wait = local ? CANCEL_WAIT_MS : REMOTE_CANCEL_WAIT_MS;
+        const until = Date.now() + wait;
+        let current = await this.snapshot(resultId, wait);
+        while ((current.manifest.status === 'running' || current.manifest.status === 'queued') && Date.now() < until) {
+            current = await this.snapshot(resultId, until - Date.now());
+        }
+        return current;
     }
 
-    /** Deletes expired results (filesystem store; Azure uses a lifecycle rule as well). */
+    /**
+     * Deletes expired results (filesystem store; Azure uses a lifecycle rule as well) and closes the results of
+     * queries whose replica died: they are stored as failed and get their `query.end` in the audit log.
+     */
     async sweep(): Promise<number> {
         let deleted = 0;
         for await (const resultId of this.#options.store.listResults()) {
             if (!isResultId(resultId) || this.#jobs.has(resultId)) continue;
-            const manifest = await getJson<Manifest>(this.#options.store, `${resultId}/${MANIFEST_PATH}`).catch(
-                () => undefined
-            );
-            if (manifest && Date.now() <= Date.parse(manifest.expiresAt)) continue;
-            await this.#options.store.deleteResult(resultId);
-            deleted++;
+            // A result that cannot be read, closed or deleted now is left for the next sweep, and does not keep
+            // this one from the others.
+            const removed = await this.#sweepResult(resultId).catch((error: unknown) => {
+                this.#options.loggers.log.warn({ err: error, resultId }, 'failed to sweep a result');
+                return false;
+            });
+            if (removed) deleted++;
         }
         return deleted;
+    }
+
+    /** Deletes the result if it has expired, and closes it if its replica died. Returns whether it was deleted. */
+    async #sweepResult(resultId: string): Promise<boolean> {
+        const { store } = this.#options;
+        // a manifest that is no JSON (cut off by a crash) counts as none; any other failure to read it is passing
+        const manifest = await getJson<Manifest>(store, `${resultId}/${MANIFEST_PATH}`).catch((error: unknown) => {
+            if (error instanceof SyntaxError) return undefined;
+            throw error;
+        });
+        if (manifest && Date.now() <= Date.parse(manifest.expiresAt)) {
+            await this.#closeOrphan(manifest);
+            return false;
+        }
+        if (!manifest) {
+            // A query that is just starting has stored its state and not yet its manifest. Anything older without
+            // a manifest is what an interrupted deletion left behind.
+            const state = await getJson<JobState>(store, `${resultId}/${STATE_PATH}`);
+            if (state && Date.now() - Date.parse(state.heartbeatAt) <= this.#options.retentionMs) return false;
+        }
+        await store.deleteResult(resultId);
+        return true;
+    }
+
+    async #closeOrphan(manifest: Manifest): Promise<void> {
+        if (manifest.status !== 'running' && manifest.status !== 'queued') return;
+        const state = await getJson<JobState>(this.#options.store, `${manifest.resultId}/${STATE_PATH}`);
+        if (!state || !isOrphaned(manifest, state, CLOSE_ORPHAN_MS)) return;
+        concludeResult(manifest, state, REPLICA_STOPPED);
+        await putJson(this.#options.store, `${manifest.resultId}/${STATE_PATH}`, state);
+        await putJson(this.#options.store, `${manifest.resultId}/${MANIFEST_PATH}`, manifest);
+        this.#auditEnd(manifest, state);
     }
 
     /**
@@ -235,6 +306,7 @@ export class ResultService {
      * callers learn at once to run the query again instead of after the heartbeat expires.
      */
     async shutdown(): Promise<void> {
+        this.#closing = true;
         for (const job of this.#jobs.values()) {
             if (job.manifest.status === 'running' || job.manifest.status === 'queued') job.interrupt();
         }

@@ -145,6 +145,8 @@ export class BlobAdapter implements SourceAdapter, FileProvider {
         const plan = prepared.plan as Plan;
         const glob = compileGlob(prepared.query);
         const client = this.#clientOrThrow;
+        // every request of the listing ends with the query; the SDK would otherwise retry on its own schedule
+        const abortSignal = context.signal;
         let count = 0;
         let bytes = 0;
         const track = (row: { size: number }): void => {
@@ -154,15 +156,15 @@ export class BlobAdapter implements SourceAdapter, FileProvider {
         const listing = async function* (): AsyncGenerator<unknown[]> {
             if (plan.tagFilter) {
                 const iterator = plan.container
-                    ? client.getContainerClient(plan.container).findBlobsByTags(plan.tagFilter)
-                    : client.findBlobsByTags(plan.tagFilter);
+                    ? client.getContainerClient(plan.container).findBlobsByTags(plan.tagFilter, { abortSignal })
+                    : client.findBlobsByTags(plan.tagFilter, { abortSignal });
                 for await (const page of iterator.byPage({ maxPageSize: PAGE_SIZE })) {
                     if (context.signal.aborted) return;
                     const rows: unknown[] = [];
                     for (const match of page.blobs) {
                         if (!glob.matches(match.name)) continue;
                         const blob = client.getContainerClient(match.containerName).getBlobClient(match.name);
-                        const props = await blob.getProperties();
+                        const props = await blob.getProperties({ abortSignal });
                         const row = toRow(
                             match.containerName,
                             {
@@ -188,6 +190,7 @@ export class BlobAdapter implements SourceAdapter, FileProvider {
             }
             const container = client.getContainerClient(plan.container as string);
             const iterator = container.listBlobsFlat({
+                abortSignal,
                 prefix: glob.prefix || undefined,
                 includeMetadata: plan.include.has('metadata'),
                 includeTags: plan.include.has('tags'),

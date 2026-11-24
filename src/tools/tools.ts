@@ -322,7 +322,7 @@ export const createMcpServer = (context: ToolContext): McpServer => {
             try {
                 await sourceOfResult(context, resultId);
                 const snapshot = await context.service.cancel(resultId);
-                audit(context, caller, 'cancel_query', { resultId });
+                audit(context, caller, 'cancel_query', { resultId, status: snapshot.manifest.status });
                 return json(describeResult(context, caller, snapshot));
             } catch (error) {
                 return failure(context, error);

@@ -15,6 +15,7 @@ const EXCHANGE_PATH = '/rpc/identity/exchangeApiKey';
 const TYPE_DEFINITION_PATH = /^\/[^/]+\/9zzzz-0000-0000v\/[^/]+$/;
 /** Re-exchange the key this long before the token expires. */
 const TOKEN_MARGIN_MS = 5 * 60_000;
+const EXCHANGE_TIMEOUT_MS = 30_000;
 
 export const isAllowedKimRequest = (
     config: Pick<KimSourceConfig, 'url' | 'identityUrl'>,
@@ -81,6 +82,8 @@ export class KimClient {
         const response = await this.#send('POST', `${this.#config.identityUrl}${EXCHANGE_PATH}`, {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ json: { key: this.#config.apiKey } }),
+            // shared by every query waiting for a token, so no query's own signal ends it: a limit of its own
+            signal: AbortSignal.timeout(EXCHANGE_TIMEOUT_MS),
         });
         const text = await response.text();
         if (!response.ok) throw new KimRequestError(response.status, errorBody(text), 'API key exchange failed');

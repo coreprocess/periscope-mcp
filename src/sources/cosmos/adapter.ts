@@ -1,4 +1,12 @@
-import { CosmosClient, type FeedOptions, PriorityLevel, type SqlParameter } from '@azure/cosmos';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import { createDefaultHttpClient, type HttpClient } from '@azure/core-rest-pipeline';
+import {
+    CosmosClient,
+    type CosmosClientOptions,
+    type FeedOptions,
+    PriorityLevel,
+    type SqlParameter,
+} from '@azure/cosmos';
 import { DefaultAzureCredential } from '@azure/identity';
 import type { Logger } from 'pino';
 import { z } from 'zod';
@@ -49,27 +57,94 @@ const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
         });
     });
 
+/**
+ * Sends every request with `signal` on top of the request's own. The client passes a query's abort signal only
+ * to the page requests; the reads it makes on the side (partition key ranges, the account) would go on, and be
+ * retried, after the query was aborted.
+ */
+const boundTo = (signal: AbortSignal, inner: HttpClient): HttpClient => ({
+    async sendRequest(request) {
+        const own = request.abortSignal;
+        if (!own) {
+            request.abortSignal = signal;
+            return inner.sendRequest(request);
+        }
+        const either = new AbortController();
+        const abort = (): void => either.abort();
+        if (own.aborted || signal.aborted) abort();
+        own.addEventListener('abort', abort);
+        signal.addEventListener('abort', abort);
+        request.abortSignal = either.signal;
+        try {
+            return await inner.sendRequest(request);
+        } finally {
+            own.removeEventListener('abort', abort);
+            signal.removeEventListener('abort', abort);
+        }
+    },
+});
+
+/** What the page loop needs of the client's query iterator. */
+export interface PageIterator {
+    hasMoreResults(): boolean;
+    fetchNext(): Promise<{ resources?: unknown[]; requestCharge?: number }>;
+}
+
+/** Reads a query page by page, within the RU budget, until it ends or the query is aborted. */
+export async function* queryPages(
+    iterator: PageIterator,
+    context: Pick<ExecutionContext, 'signal' | 'addCost'>,
+    budget: number | undefined
+): AsyncGenerator<unknown[]> {
+    while (iterator.hasMoreResults()) {
+        if (context.signal.aborted) return;
+        const started = Date.now();
+        const page = await iterator.fetchNext().catch((error: unknown) => {
+            throw new PeriscopeError('source_error', summaryOf(error), undefined, { cause: error });
+        });
+        const ru = page.requestCharge ?? 0;
+        context.addCost({ ru });
+        if (page.resources && page.resources.length > 0) yield page.resources;
+        // A page without results may have come without a request. A client that goes on answering like that
+        // would otherwise keep this loop on resolved promises alone, and no timer or request of the whole
+        // process would run again: neither the abort above nor anything else.
+        else await nextTurn();
+        if (budget && ru > 0) {
+            const minimum = (ru / budget) * 1000;
+            const elapsed = Date.now() - started;
+            if (minimum > elapsed) await sleep(minimum - elapsed, context.signal);
+        }
+    }
+}
+
 /** Cosmos DB for NoSQL: queries and metadata only; writes are never offered and blocked on the wire. */
 export class CosmosAdapter implements SourceAdapter {
     readonly config: CosmosSourceConfig;
+    readonly #credential: DefaultAzureCredential | undefined;
     #client: CosmosClient | undefined;
 
     constructor(config: CosmosSourceConfig) {
         this.config = config;
+        // one credential for all clients, so a token is fetched once and not per query
+        this.#credential = config.azureAuth ? new DefaultAzureCredential() : undefined;
     }
 
-    async init(_log: Logger): Promise<void> {
+    #clientOptions(httpClient: HttpClient): CosmosClientOptions {
         const c = this.config;
-        this.#client = new CosmosClient({
+        return {
             endpoint: c.endpoint,
-            ...(c.azureAuth ? { aadCredentials: new DefaultAzureCredential() } : { key: c.key as string }),
-            httpClient: guardedCosmosHttpClient(c.name),
+            ...(this.#credential ? { aadCredentials: this.#credential } : { key: c.key as string }),
+            httpClient,
             userAgentSuffix: 'periscope-mcp',
             connectionPolicy: {
                 enableEndpointDiscovery: !/localhost|127\.0\.0\.1/.test(c.endpoint),
                 requestTimeout: 30_000,
             },
-        });
+        };
+    }
+
+    async init(_log: Logger): Promise<void> {
+        this.#client = new CosmosClient(this.#clientOptions(guardedCosmosHttpClient(this.config.name)));
         // Fail fast for unreachable or deleted accounts; the registry retries later.
         try {
             await this.#client.getDatabaseAccount({ abortSignal: AbortSignal.timeout(15_000) });
@@ -150,7 +225,14 @@ export class CosmosAdapter implements SourceAdapter {
 
     async execute(prepared: PreparedQuery, context: ExecutionContext): Promise<ResultStream> {
         const plan = prepared.plan as Plan;
-        const container = this.#clientOrThrow.database(plan.database).container(plan.container);
+        // A client of its own for the query, with every request bound to the query's abort signal: once the
+        // query is aborted, nothing of it reaches the account any more, whatever the client still retries.
+        const client = new CosmosClient(
+            this.#clientOptions(
+                guardedCosmosHttpClient(this.config.name, boundTo(context.signal, createDefaultHttpClient()))
+            )
+        );
+        const container = client.database(plan.database).container(plan.container);
         const feedOptions: FeedOptions = {
             maxItemCount: PAGE_SIZE,
             maxDegreeOfParallelism: 4,
@@ -161,20 +243,10 @@ export class CosmosAdapter implements SourceAdapter {
         const iterator = container.items.query({ query: prepared.query, parameters: plan.parameters }, feedOptions);
         const budget = this.config.maxRuPerSec;
         const batches = async function* (): AsyncGenerator<unknown[]> {
-            while (iterator.hasMoreResults()) {
-                if (context.signal.aborted) return;
-                const started = Date.now();
-                const page = await iterator.fetchNext().catch((error: unknown) => {
-                    throw new PeriscopeError('source_error', summaryOf(error), undefined, { cause: error });
-                });
-                const ru = page.requestCharge ?? 0;
-                context.addCost({ ru });
-                if (page.resources && page.resources.length > 0) yield page.resources;
-                if (budget && ru > 0) {
-                    const minimum = (ru / budget) * 1000;
-                    const elapsed = Date.now() - started;
-                    if (minimum > elapsed) await sleep(minimum - elapsed, context.signal);
-                }
+            try {
+                yield* queryPages(iterator, context, budget);
+            } finally {
+                client.dispose();
             }
         };
         return { format: 'ndjson', batches: batches() } satisfies DocumentStream;

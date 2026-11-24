@@ -25,12 +25,21 @@ const KEEPALIVE_MS = 60_000;
 const optionsSchema = z.object({ values: z.boolean().optional() }).strict();
 
 type Reply = unknown;
+interface CommandOptions {
+    /** Takes a command that is not yet written out of the client's queue, e.g. while it reconnects. */
+    abortSignal?: AbortSignal;
+}
 interface NodeClient {
-    sendCommand(args: string[]): Promise<Reply>;
+    sendCommand(args: string[], options?: CommandOptions): Promise<Reply>;
 }
 interface ClusterRouter {
-    sendCommand(key: string | undefined, readonly: boolean, args: string[]): Promise<Reply>;
+    sendCommand(key: string | undefined, readonly: boolean, args: string[], options?: CommandOptions): Promise<Reply>;
 }
+
+/** The client with every command bound to a query's abort signal. */
+const boundTo = (signal: AbortSignal, client: NodeClient): NodeClient => ({
+    sendCommand: (args) => client.sendCommand(args, { abortSignal: signal }),
+});
 interface AnyClient extends NodeClient {
     connect(): Promise<unknown>;
     close(): Promise<void>;
@@ -273,10 +282,10 @@ export class RedisAdapter implements SourceAdapter {
         const cluster = this.#cluster;
         if (!cluster) return this.#clientOrThrow;
         return {
-            sendCommand: async (args) => {
+            sendCommand: async (args, options) => {
                 const keyless = ['DBSIZE', 'RANDOMKEY'].includes(String(args[0]).toUpperCase());
-                if (keyless) return ((await this.#nodes())[0] as NodeClient).sendCommand(args);
-                return cluster.sendCommand(args[1], true, args);
+                if (keyless) return ((await this.#nodes())[0] as NodeClient).sendCommand(args, options);
+                return cluster.sendCommand(args[1], true, args, options);
             },
         };
     }
@@ -319,7 +328,7 @@ export class RedisAdapter implements SourceAdapter {
 
     async execute(prepared: PreparedQuery, context: ExecutionContext): Promise<ResultStream> {
         const command = prepared.plan as ParsedCommand;
-        const client = this.#router();
+        const client = boundTo(context.signal, this.#router());
         const limiter = new OpsLimiter(this.config.maxOpsPerSec);
         if (!/^(H|S|Z)?SCAN$/.test(command.name)) {
             await limiter.take(1, context.signal);
@@ -332,7 +341,7 @@ export class RedisAdapter implements SourceAdapter {
         if (command.name !== 'SCAN') return this.#collectionScan(command, client, limiter, context);
 
         const withValues = prepared.options.values === true;
-        const nodes = await this.#nodes();
+        const nodes = (await this.#nodes()).map((node) => boundTo(context.signal, node));
         const seen = new Set<string>();
         let overflow = false;
         const args = command.args.slice(2);

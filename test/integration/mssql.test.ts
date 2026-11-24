@@ -283,6 +283,32 @@ describe('mssql source', () => {
         await assert.rejects(adapter.validate('SELECT @x', [1], {}), /params must be an object/);
     });
 
+    it('gives its connection back when a query is aborted before its stream is read', async () => {
+        // more often than the pool has connections: one that stays behind per cancellation would exhaust it
+        const adapter = adapters.get('reader:') as MssqlAdapter;
+        const prepared = await adapter.validate(
+            'SELECT a.id, b.name FROM dbo.orders a CROSS JOIN dbo.orders b',
+            {},
+            {}
+        );
+        for (let i = 0; i < 12; i++) {
+            // every other run is aborted before it starts, the rest while it waits for its connection
+            const controller = new AbortController();
+            if (i % 2 === 0) controller.abort(new Error('aborted'));
+            const opening = adapter.execute(prepared, {
+                signal: controller.signal,
+                deadline: Date.now() + 30_000,
+                log: nullLoggers().log,
+                addCost: () => undefined,
+                fileReference: () => '',
+            });
+            controller.abort(new Error('aborted'));
+            await assert.rejects(opening, /aborted/);
+        }
+        const after = await harness.run(adapter, 'SELECT COUNT(*) AS n FROM dbo.orders');
+        assert.equal((await harness.service.readRows(after, 0, 1, undefined)).rows[0]?.[0], 12_001);
+    });
+
     it('cancels a running export and frees the connection', async () => {
         const adapter = adapters.get('reader:') as MssqlAdapter;
         const prepared = await adapter.validate(

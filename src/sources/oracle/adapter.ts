@@ -271,30 +271,45 @@ export class OracleAdapter implements SourceAdapter {
         const plan = prepared.plan as Plan;
         const connection = await this.#connection();
         const onAbort = (): void => void connection.break().catch(() => undefined);
+        let stream: ReturnType<oracledb.Connection['queryStream']> | undefined;
         const cleanup = async (): Promise<void> => {
             context.signal.removeEventListener('abort', onAbort);
+            stream?.destroy();
+            // After a break the driver first has to bring the connection back in step with the server. Such a
+            // connection is not handed to the next query: it is closed, which rolls its transaction back.
+            if (context.signal.aborted) {
+                await connection.close({ drop: true }).catch(() => undefined);
+                return;
+            }
             await connection.rollback().catch(() => undefined);
             await connection.close().catch(() => undefined);
         };
         try {
+            context.signal.addEventListener('abort', onAbort, { once: true });
+            // an abort before this point found no listener
+            context.signal.throwIfAborted();
             connection.callTimeout = Math.min(remaining(context.deadline), 2_147_483_647);
             await connection.execute('SET TRANSACTION READ ONLY');
-            context.signal.addEventListener('abort', onAbort, { once: true });
+            // a break that arrived during the statement above found nothing to stop
+            context.signal.throwIfAborted();
             if (plan.explain) return await this.#explain(connection, plan, prepared.params, cleanup);
 
-            const stream = connection.queryStream(plan.sql, prepared.params as oracledb.BindParameters, {
+            const rows = connection.queryStream(plan.sql, prepared.params as oracledb.BindParameters, {
                 fetchArraySize: 1000,
                 fetchTypeHandler,
             });
+            stream = rows;
             const metadata = await new Promise<oracledb.Metadata<unknown>[]>((resolve, reject) => {
-                stream.once('metadata', resolve);
-                stream.once('error', (error: Error) => reject(new PeriscopeError('source_error', error.message)));
+                rows.once('metadata', resolve);
+                rows.once('error', (error: Error) => reject(new PeriscopeError('source_error', error.message)));
             });
             const mapped = metadata.map(mapOracleColumn);
+            // nobody reads the stream of an aborted query, so it would never release the connection
+            context.signal.throwIfAborted();
             const batches = async function* (): AsyncGenerator<unknown[][]> {
                 let batch: unknown[][] = [];
                 try {
-                    for await (const row of stream as AsyncIterable<unknown[]>) {
+                    for await (const row of rows as AsyncIterable<unknown[]>) {
                         batch.push(row.map((value, i) => (mapped[i] as Mapped).convert(value)));
                         if (batch.length >= BATCH_ROWS) {
                             yield batch;
@@ -306,7 +321,6 @@ export class OracleAdapter implements SourceAdapter {
                     if ((error as { code?: string }).code === 'ERR_STREAM_PREMATURE_CLOSE') return;
                     throw new PeriscopeError('source_error', error instanceof Error ? error.message : String(error));
                 } finally {
-                    stream.destroy();
                     await cleanup();
                 }
             };

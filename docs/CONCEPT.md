@@ -541,8 +541,9 @@ Replicas cache block indexes and Parquet footers in a small in-memory LRU, so co
 
 ### 6.3 Execution
 
-- **Jobs** run in the replica that accepted the `query` call. `state.json` holds a heartbeat. If a replica dies, the result switches to `failed` (with partial data, if any) once the heartbeat is 30 s old, and the agent can re-run the query. A replica that shuts down (SIGTERM) fails its running jobs at once with code `internal` and waits up to 5 s until their final manifests are stored, so `get_result` reports the restart right away.
+- **Jobs** run in the replica that accepted the `query` call. `state.json` holds a heartbeat. If a replica dies, the result reads as `failed` (with partial data, if any) once the heartbeat is 30 s old, and the agent can re-run the query. A running replica stores that outcome with a sweep (every ten minutes) once the heartbeat is five minutes old, and writes the query's `query.end` to the audit log; the longer wait keeps it from overwriting what a replica that is only slow would still store. A replica that shuts down (SIGTERM) takes no new queries, fails its running jobs at once with code `internal`, including one that is just starting, and waits up to 5 s until their final manifests are stored, so `get_result` reports the restart right away. The sweep deletes only what has expired: a result it cannot read at the moment is left for the next sweep, and so is a query that has stored its state but not yet its manifest. A manifest cut off by a crash counts as none.
 - **Long-running queries** are bounded by `MAX_QUERY_DURATION` and `MAX_RESULT_BYTES` per source. They are independent of HTTP and MCP request timeouts.
+- **A job never waits for its source to stop.** When a query is cancelled, reaches its maximum duration or is interrupted by a shutdown, the source is told to stop (below), and the job ends in the same moment: it stores `cancelled` or `failed` and writes its `query.end`, whether or not the source's client reacts. A client that ignores the abort is left behind; what it still does has no taker.
 - **Per source type:**
   - **Postgres:** server-side cursor inside the read-only transaction; `statement_timeout` is set from `MAX_QUERY_DURATION`.
   - **Oracle:** `queryStream` with a large fetch array size; `callTimeout` per round trip.
@@ -555,7 +556,16 @@ Replicas cache block indexes and Parquet footers in a small in-memory LRU, so co
   - **KIM:** one HTTP query per page of at most 500 entries, at one pinned snapshot (§6.1); each request's timeout is the time left until `MAX_QUERY_DURATION`.
   - **REST:** one request at a time, the next one only after `transform` returned it, up to `MAX_REQUESTS`. Every response body is capped at `MAX_RESPONSE_BYTES`. Redirects are followed by Periscope itself, at most five hops, each one guarded (§7.1 C).
 - **Limits:** concurrent queries per user, result size and duration per source, and a total size limit for the result store.
-- **Cancellation:** `cancel_query` stops the job (`pg_cancel_backend` on Periscope's own session, `connection.break()` for Oracle, `request.cancel()` (a TDS attention) for SQL Server, aborting the Cosmos and Log Analytics iterators and the running Resource Graph, KIM or REST request).
+- **Cancellation:** `cancel_query` ends the job as described and returns its final status. For a query that another replica runs it leaves a marker, which that replica finds within 5 s, and waits up to 7 s for the outcome. How each source is told to stop, on a cancellation as on a timeout:
+  - **Postgres:** `pg_cancel_backend` on Periscope's own session. If the server does not answer within 5 s (a dead network path), the connection is closed, so it does not stay taken from the pool; the cancellation itself has the same limit. The connection goes back to the pool only after the cancellation has run, so it cannot hit the next query on the same session. A connection that is lost while in use fails its query at once and leaves the pool.
+  - **Oracle:** `connection.break()`; every round trip is also limited by `callTimeout`. The connection of an aborted query is closed, not reused.
+  - **SQL Server:** `request.cancel()` (a TDS attention) on the statement that runs, a plan request included; the driver closes a connection that does not acknowledge it within 5 s.
+  - **Cosmos:** every query has a client of its own whose requests all carry the query's abort signal: page requests, the query plan, and the reads of partition key ranges and of the account that the SDK sends without the signal. A request in flight is aborted; whatever the SDK retries afterwards (it sleeps through the wait of a `429` and retries reads that timed out) no longer reaches the account.
+  - **Blob:** the abort signal goes with every list, tag search and property request.
+  - **Redis:** the abort signal goes with every command and takes it out of the client's queue if it is not yet written, for example while the client reconnects. A command already written is short by the allowlist.
+  - **Log Analytics, Resource Graph, KIM, REST:** the running `fetch` is aborted, with its response body. A `rest` script gets the signal for its own requests.
+  - A SQL query aborted before its first rows were read rolls back and returns its connection at once; its statement is not sent any more.
+  - After an abort the job does not ask a source for another batch.
 
 ### 6.4 Downloads
 
@@ -1009,7 +1019,7 @@ Periscope uses **its own user-assigned managed identity** and its own secrets. D
 
 ### 7.5 Data protection and audit
 
-- **Audit log** as JSONL to stdout, collected by the platform's log pipeline. Every MCP call is logged, with timestamp, user (`oid`, `upn`), source, tool, query text, result ID, row count, bytes, duration and outcome. Guard rejections are logged with their reason, and so are **URL issuance and every download** (result, part, bytes, client IP). Result data is never logged.
+- **Audit log** as JSONL to stdout, collected by the platform's log pipeline. Every MCP call is logged, with timestamp, user (`oid`, `upn`), source, tool, query text, result ID, row count, bytes, duration and outcome. Guard rejections are logged with their reason, and so are **URL issuance and every download** (result, part, bytes, client IP). Result data is never logged. Every `query.start` is followed by a `query.end` with the status and, for a query that did not succeed, the error code: also after a cancellation, a timeout and a shutdown, and, written by a later sweep, for a query whose replica died (§6.3).
 - **Errors to clients are summaries.** A driver or SDK error reaches the agent as its first line (at most 300 characters). Hostnames, request paths, headers and credential chains that follow go only to the operational log, together with the full error. The same holds for a source that failed to initialize: `list_sources` shows the short reason and retries the source once its retry time (one minute) has passed.
 - **Results are data at rest.** Query results are a copy of source data in Periscope's private result store, encrypted at rest and deleted after `PERISCOPE_RESULTS_RETENTION`. Blob contents and offloaded KIM contents are the exception: they are never copied, only referenced. Operators choose the retention to match their data-protection rules.
 - **Data leaves the network.** Windows go into LLM context, and downloads land in agent sandboxes. Access is therefore limited to the members of the app role. Connecting production or personal data is an explicit operator decision per deployment.
@@ -1185,7 +1195,8 @@ Each source adapter implements just three operations: `describe`, `validate` (sy
 - Parquet type mapping: a round trip per source type covering every supported column type, including the edge cases (unconstrained decimals, time zones, JSON, vectors, LOBs), checked with DuckDB and pyarrow as readers.
 - URL tampering and expiry; access checks against source roles (including role revocation while a result exists).
 - Blob references: download and line windows of an unchanged blob; a blob changed or deleted after the query returns `412`/`404`; references to versions and snapshots stay valid; line index built on first use.
-- Cancellation; a replica dying mid-job (heartbeat expiry → `failed`).
+- Cancellation; a replica dying mid-job (heartbeat expiry → `failed`, stored and audited by the next sweep).
+- **Queries that do not come back:** sources whose client neither answers nor reacts to the abort (the job still ends at once as `cancelled`, `timeout` or, on shutdown, `internal`, each with its `query.end`); a stand-in for the Cosmos gateway that answers with empty pages, `429`, `410` after a split, or not at all (cross-partition `GROUP BY` stays complete, a partition range that is gone fails the query instead of being asked again, and nothing reaches the account after a cancellation); SQL queries aborted before their stream is read (the connection goes back to the pool); and an export that does not keep its batches in memory.
 - Log Analytics time-window splitting; Resource Graph paging, throttling and cut-off results; Cosmos RU throttling.
 - KIM paging: record windows and typed node anchors at one pinned snapshot, the halving page size on the result budget, written windows sent as they are, offloaded contents read by Range, and the key exchange on an expired token.
 - REST sign-in, paging and a new sign-in after a `401` through the script; redirects; file reads with and without Range support; the request and response size limits.

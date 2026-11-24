@@ -230,6 +230,48 @@ describe('oracle source', () => {
         assert.equal(await checksum(), before);
     });
 
+    it('gives its connection back when a query is aborted before its stream is read', async () => {
+        // more often than the pool has connections: one that stays behind per cancellation would exhaust it
+        const adapter = adapters[0] as OracleAdapter;
+        const prepared = await adapter.validate('SELECT a.id FROM orders a CROSS JOIN orders b', undefined, {});
+        for (let i = 0; i < 8; i++) {
+            // every other run is aborted before it starts, the rest while it waits for its connection
+            const controller = new AbortController();
+            if (i % 2 === 0) controller.abort(new Error('aborted'));
+            const opening = adapter.execute(prepared, {
+                signal: controller.signal,
+                deadline: Date.now() + 30_000,
+                log: nullLoggers().log,
+                addCost: () => undefined,
+                fileReference: () => '',
+            });
+            controller.abort(new Error('aborted'));
+            await assert.rejects(opening, /aborted/);
+        }
+        const after = await harness.run(adapter, 'SELECT COUNT(*) AS n FROM orders');
+        assert.equal((await harness.service.snapshot(after)).manifest.status, 'succeeded');
+    });
+
+    it('cancels a running export and leaves the pool usable', async () => {
+        // more often than the pool has connections; a break leaves a connection out of step, so it is not reused
+        const adapter = adapters[0] as OracleAdapter;
+        const prepared = await adapter.validate(
+            'SELECT a.id, b.id AS other FROM orders a CROSS JOIN orders b CROSS JOIN orders c',
+            undefined,
+            {}
+        );
+        for (let i = 0; i < 8; i++) {
+            const resultId = await harness.service.start(adapter, prepared, { oid: 'canceller', roles: new Set() });
+            // some while the first rows are fetched, some between two fetches of the export
+            await new Promise((resolve) => setTimeout(resolve, 100 + i * 60));
+            assert.equal((await harness.service.cancel(resultId)).manifest.status, 'cancelled');
+        }
+        const after = await harness.run(adapter, 'SELECT COUNT(*) AS n FROM orders');
+        const { manifest } = await harness.service.snapshot(after);
+        assert.equal(manifest.status, 'succeeded', JSON.stringify(manifest.error));
+        assert.ok(Number((await harness.service.readRows(after, 0, 1, undefined)).rows[0]?.[0]) > 0);
+    });
+
     it('exports with exact numbers, dates and LOBs', async () => {
         const adapter = adapters[0] as OracleAdapter;
         const resultId = await harness.run(adapter, 'SELECT * FROM orders ORDER BY id;');

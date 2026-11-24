@@ -47,10 +47,68 @@ export interface JobOptions {
     fileReference: (resultId: string, reference: FileReference) => string;
 }
 
+/** Marks a result as ended, in place: a query cut off by `cancelled` is cancelled, any other error fails it. */
+export const concludeResult = (manifest: Manifest, state: JobState, error?: PeriscopeError): void => {
+    const status = error === undefined ? 'succeeded' : error.code === 'cancelled' ? 'cancelled' : 'failed';
+    manifest.status = status;
+    state.status = status;
+    manifest.rowCount = manifest.files.reduce((sum, part) => sum + part.rowCount, 0);
+    manifest.completedAt = new Date().toISOString();
+    if (!error) return;
+    const failure: ResultError = { code: error.code, message: error.message, partial: manifest.files.length > 0 };
+    manifest.error = failure;
+    state.error = failure;
+};
+
+/**
+ * Settles like `pending`, or rejects with the abort reason as soon as the signal fires. The listener goes with
+ * each call: racing against one promise that lives as long as the job would keep every value it ever won
+ * against, which for an export is every batch.
+ */
+const unlessAborted = <T>(pending: Promise<T>, signal: AbortSignal): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+        if (signal.aborted) {
+            // what the source answers later has no taker
+            pending.catch(() => undefined);
+            reject(signal.reason);
+            return;
+        }
+        const onAbort = (): void => reject(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+        pending.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    });
+
+/**
+ * Iterates `source` until the signal fires, then throws the abort reason without waiting for the source. The
+ * source is told to stop through the same signal; a client that ignores it, or is stuck in a call, is left
+ * behind and cannot hold the job.
+ */
+async function* untilAborted<T>(source: AsyncIterable<T>, signal: AbortSignal): AsyncGenerator<T> {
+    const iterator = source[Symbol.asyncIterator]();
+    let done = false;
+    try {
+        for (;;) {
+            const next = await unlessAborted(iterator.next(), signal);
+            if (next.done) {
+                done = true;
+                return;
+            }
+            yield next.value;
+            // The consumer has written the batch. After an abort the source is not asked for another one: it
+            // was told to stop while it had nothing running, and a new read would start work nobody cancels.
+            if (signal.aborted) throw signal.reason;
+        }
+    } finally {
+        // lets the source release what it holds; after an abort that goes on without the job waiting for it
+        if (!done) await unlessAborted(Promise.resolve(iterator.return?.()), signal).catch(() => undefined);
+    }
+}
+
 /**
  * Runs one query to completion: streams batches from the source into parts, writes
  * indexes, keeps the public manifest and the internal state up to date, and enforces
- * duration, size and cancellation.
+ * duration, size and cancellation. Once the query is aborted the job ends, whether or not
+ * the source reacts.
  */
 export class Job {
     readonly #options: JobOptions;
@@ -147,10 +205,11 @@ export class Job {
         this.#heartbeat = setInterval(() => void this.persist().catch(() => undefined), HEARTBEAT_MS);
         this.manifest.status = 'running';
         this.state.status = 'running';
-        await this.persist();
         try {
-            const stream = await open();
+            // inside the try: a store that fails here must not leave the timers running and the result as running
+            await this.persist();
             this.#throwIfAborted();
+            const stream = await unlessAborted(open(), this.#controller.signal);
             this.manifest.format = stream.format;
             if (stream.format === 'ndjson') this.manifest.compression = 'gzip';
             else delete this.manifest.compression;
@@ -163,7 +222,7 @@ export class Job {
             else await last?.abort();
             this.#finishSchema(stream);
             if (stream.format === 'ndjson') this.#documentExtras(stream);
-            this.#complete('succeeded');
+            concludeResult(this.manifest, this.state);
         } catch (error) {
             await this.#writer?.abort().catch(() => undefined);
             this.#writer = undefined;
@@ -172,11 +231,7 @@ export class Job {
             if (failure.code !== 'cancelled' && failure.cause !== undefined) {
                 this.#options.log.warn({ err: failure, resultId: this.manifest.resultId }, 'query failed');
             }
-            this.#complete(failure.code === 'cancelled' ? 'cancelled' : 'failed', {
-                code: failure.code,
-                message: failure.message,
-                partial: this.manifest.files.length > 0,
-            });
+            concludeResult(this.manifest, this.state, failure);
         } finally {
             clearTimeout(timer);
             clearInterval(this.#heartbeat);
@@ -202,7 +257,7 @@ export class Job {
         };
         if (stream.format === 'parquet') {
             this.manifest.schema = { columns: stream.columns.map((c) => c.info) };
-            for await (const batch of stream.batches) {
+            for await (const batch of untilAborted(stream.batches, this.#controller.signal)) {
                 this.#throwIfAborted();
                 const writer = (this.#writer as ParquetPartWriter | undefined) ?? (await this.#openParquet(stream));
                 this.#writer = writer;
@@ -215,7 +270,7 @@ export class Job {
             }
         } else {
             this.#inferrer = new SchemaInferrer();
-            for await (const batch of stream.batches) {
+            for await (const batch of untilAborted(stream.batches, this.#controller.signal)) {
                 this.#throwIfAborted();
                 const writer = (this.#writer as NdjsonPartWriter | undefined) ?? this.#openNdjson();
                 this.#writer = writer;
@@ -297,17 +352,6 @@ export class Job {
         if (totals) {
             this.manifest.blobCount = totals.count;
             this.manifest.blobBytes = totals.bytes;
-        }
-    }
-
-    #complete(status: 'succeeded' | 'failed' | 'cancelled', error?: ResultError): void {
-        this.manifest.status = status;
-        this.state.status = status;
-        this.manifest.rowCount = this.manifest.files.reduce((sum, part) => sum + part.rowCount, 0);
-        this.manifest.completedAt = new Date().toISOString();
-        if (error) {
-            this.manifest.error = error;
-            this.state.error = error;
         }
     }
 }
