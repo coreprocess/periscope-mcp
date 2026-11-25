@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24.22.1-bookworm-slim AS base
+FROM node:24.22.3-bookworm-slim AS base
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
@@ -37,7 +37,7 @@ RUN set -eu; \
     cd /opt/oracle/instantclient; \
     rm -f ./*.jar libocci.so* libocijdbc*.so libtfojdbc*.so adrci genezi uidrvci BASIC_LITE_README
 
-FROM node:24.22.1-bookworm-slim
+FROM node:24.22.3-bookworm-slim
 ARG PERISCOPE_VERSION=dev
 LABEL org.opencontainers.image.source="https://github.com/coreprocess/periscope-mcp" \
       org.opencontainers.image.description="Read-only MCP server for Postgres, Oracle, SQL Server, Cosmos DB, Blob Storage, Log Analytics, Redis and KIM" \

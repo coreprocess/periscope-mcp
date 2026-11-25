@@ -117,6 +117,27 @@ describe('parquet part', () => {
         ]);
     });
 
+    it('returns strings and column names exactly as stored, a leading byte order mark included', async () => {
+        // sources hand such values through (a CSV import, a file name); the reader must not tidy them up
+        const bom = '\uFEFF';
+        const marked = [scalarColumn(`${bom}id`, 'string', extra), scalarColumn('name', 'string', extra)];
+        const writer = await ParquetPartWriter.open({ kind: 'filesystem', dir }, 'r2/part-0000.parquet', marked);
+        await writer.add([
+            [`${bom}first`, 'plain'],
+            ['second', `${bom}marked`],
+        ]);
+        await writer.finish();
+
+        const window = await readParquetRows(store, 'r2/part-0000.parquet', 0, 2);
+        assert.deepEqual(window.columns, [`${bom}id`, 'name']);
+        assert.deepEqual(window.rows, [
+            [`${bom}first`, 'plain'],
+            ['second', `${bom}marked`],
+        ]);
+        const projected = await readParquetRows(store, 'r2/part-0000.parquet', 0, 1, [`${bom}id`]);
+        assert.deepEqual(projected.rows, [[`${bom}first`]]);
+    });
+
     it('aborts with rows in flight without an unhandled rejection', async () => {
         const unhandled: unknown[] = [];
         const record = (reason: unknown) => unhandled.push(reason);

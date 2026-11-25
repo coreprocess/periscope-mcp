@@ -137,12 +137,30 @@ describe('redis source', () => {
     });
 
     it('blocks non-allowlisted commands on the wire, for any client in the process', async () => {
-        const client = createClient({ url });
-        await assert.rejects(
-            client.connect().then(() => client.set('a', '1')),
-            /blocked by the read-only guard/
-        );
-        await client.close().catch(() => undefined);
+        // every way the client has of putting a command on the socket: alone, in a transaction, in a pipeline,
+        // and ahead of another command
+        const newClient = () => createClient({ url });
+        const attempts: [string, (client: ReturnType<typeof newClient>) => Promise<unknown>][] = [
+            ['command', (client) => client.set('a', '1')],
+            ['transaction', (client) => client.multi().set('a', '1').exec()],
+            ['pipeline', (client) => client.multi().set('a', '1').execAsPipeline()],
+            [
+                'prelude',
+                (client) =>
+                    client.sendCommand(['GET', 'a'], {
+                        prelude: { args: ['SET', 'a', '1'], onReply: () => undefined },
+                    }),
+            ],
+        ];
+        for (const [name, attempt] of attempts) {
+            const client = newClient();
+            await assert.rejects(
+                client.connect().then(() => attempt(client)),
+                /blocked by the read-only guard/,
+                name
+            );
+            await client.close().catch(() => undefined);
+        }
         assert.equal(await writesSinceSave(), 0);
     });
 

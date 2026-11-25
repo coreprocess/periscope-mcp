@@ -783,6 +783,8 @@ Several independent layers per type. All guard checks run synchronously in `quer
    - data-modifying CTEs (`WITH x AS (DELETE … RETURNING *) SELECT …`); every CTE is checked
 
    Queries run over the extended query protocol, which also rejects multiple statements.
+
+   The parser reads a statement only to a depth of its own (some hundred levels of nested subqueries, joins or chained operators, about 1,500 `UNION` branches); a deeper one is rejected as a syntax error, never passed on unread. Long flat lists (`IN`, `AND`/`OR`, CTEs) are not affected.
 3. **Routine inventory.** This covers side effects that a read-only transaction does _not_ prevent:
    - **Blocked by name:**
      - `dblink*`, `oracle_execute` (oracle_fdw can run arbitrary statements remotely), `pg_background*`, `cron.*`

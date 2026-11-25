@@ -16,6 +16,9 @@ const SERVER_SETUP = [
     'CREATE DATABASE app',
     "CREATE LOGIN writer WITH PASSWORD = 'Writer-Test-1', CHECK_POLICY = OFF",
     "CREATE LOGIN reader WITH PASSWORD = 'Reader-Test-1', CHECK_POLICY = OFF",
+    "CREATE LOGIN semi WITH PASSWORD = 'Semi;colon-1', CHECK_POLICY = OFF",
+    // to read its own connection's encryption state
+    'GRANT VIEW SERVER STATE TO semi',
 ];
 
 const DATABASE_SETUP = [
@@ -25,6 +28,9 @@ const DATABASE_SETUP = [
     'ALTER ROLE db_datareader ADD MEMBER reader',
     'GRANT VIEW DEFINITION TO reader',
     'GRANT SHOWPLAN TO reader',
+    'CREATE USER semi FOR LOGIN semi',
+    'ALTER ROLE db_datareader ADD MEMBER semi',
+    'GRANT VIEW DEFINITION TO semi',
     `CREATE TABLE dbo.orders (id int PRIMARY KEY, big bigint, amount decimal(38,10), price money, small smallmoney,
         ratio float, created date, ts datetime2(7), legacy datetime, tsz datetimeoffset(7), at time(7), flag bit,
         name nvarchar(100), notes nvarchar(max), doc varbinary(max), guid uniqueidentifier, x xml)`,
@@ -307,6 +313,39 @@ describe('mssql source', () => {
         }
         const after = await harness.run(adapter, 'SELECT COUNT(*) AS n FROM dbo.orders');
         assert.equal((await harness.service.readRows(after, 0, 1, undefined)).rows[0]?.[0], 12_001);
+    });
+
+    it('connects with a connection string: a quoted password, and TLS as the source keys say', async () => {
+        // no Encrypt in the string, so ENCRYPT (true) applies; the semicolon in the password needs the quotes
+        const adapter = new MssqlAdapter({
+            index: 0,
+            type: 'mssql',
+            name: 'mssql_connection_string',
+            description: undefined,
+            maxQueryDurationMs: 120_000,
+            maxResultBytes: 1024 ** 3,
+            connectionString: `Server=${server},${port};Database=app;User Id=semi;Password="Semi;colon-1"`,
+            host: undefined,
+            port: 1433,
+            database: undefined,
+            user: undefined,
+            password: undefined,
+            azureAuth: false,
+            encrypt: true,
+            trustServerCertificate: true,
+            readIntent: false,
+            allowRoutines: [],
+            allowLinkedServers: false,
+        });
+        await adapter.init(nullLoggers().log);
+        adapters.set('semi:', adapter);
+        const resultId = await harness.run(
+            adapter,
+            'SELECT COUNT(*) AS n, ENCRYPT_OPTION AS tls FROM dbo.orders CROSS JOIN sys.dm_exec_connections WHERE session_id = @@SPID GROUP BY ENCRYPT_OPTION'
+        );
+        const { manifest } = await harness.service.snapshot(resultId);
+        assert.equal(manifest.status, 'succeeded', JSON.stringify(manifest.error));
+        assert.deepEqual((await harness.service.readRows(resultId, 0, 1, undefined)).rows[0], [12_001, 'TRUE']);
     });
 
     it('cancels a running export and frees the connection', async () => {

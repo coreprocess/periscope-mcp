@@ -94,10 +94,10 @@ SQL Server 2017+, Azure SQL Database and Azure SQL Managed Instance.
 
 | Key | Description |
 |---|---|
-| `CONNECTION_STRING` | ADO.NET style, e.g. `Server=tcp:host,1433;Database=db;User Id=…;Password=…;Encrypt=true` |
+| `CONNECTION_STRING` | ADO.NET style, e.g. `Server=tcp:host,1433;Database=db;User Id=…;Password=…;Encrypt=true`. A value that contains `;` goes in double quotes (`Password="a;b"`); `;;` is not an escape. `Encrypt` and `TrustServerCertificate` in the string take precedence over the keys below: `Encrypt=true` (or `yes`, `mandatory`), `Encrypt=strict` (TDS 8.0: SQL Server 2022+ or Azure SQL, the certificate is always verified) and `Encrypt=false` (or `no`, `optional`: encrypted only if the server insists). Leave them out of the string to use `ENCRYPT` and `TRUST_SERVER_CERTIFICATE`. |
 | `HOST`, `PORT`, `DATABASE`, `USER`, `PASSWORD` | Alternative to `CONNECTION_STRING`; `PORT` defaults to `1433` |
 | `AUTH` | `azure`: Entra token instead of `USER`/`PASSWORD` (Azure SQL) |
-| `ENCRYPT` | Default `true` |
+| `ENCRYPT` | Default `true`; applies unless the connection string sets `Encrypt` |
 | `TRUST_SERVER_CERTIFICATE` | Default `false`; `true` only for self-signed test servers |
 | `READ_INTENT` | `true`: connect with `ApplicationIntent=ReadOnly` (readable secondary). Defaults to `true` when the connection string contains it. |
 | `ALLOW_ROUTINES` | Comma-separated functions (`schema.name` or `name`) cleared after review |

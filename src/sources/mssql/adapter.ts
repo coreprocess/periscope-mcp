@@ -175,7 +175,7 @@ export class MssqlAdapter implements SourceAdapter {
                 ? (base.options?.trustServerCertificate ?? c.trustServerCertificate)
                 : c.trustServerCertificate,
             appName: 'periscope',
-            // parseConnectionString ignores ApplicationIntent, so it is set explicitly.
+            // READ_INTENT decides, with or without a connection string (the configuration reads its default from it).
             readOnlyIntent: c.readIntent,
         };
         if (!c.connectionString && c.database) options.database = c.database;

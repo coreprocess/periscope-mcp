@@ -77,6 +77,25 @@ describe('postgres syntax-tree guard', () => {
         }
     });
 
+    it('fails closed on statements nested deeper than the parser reads', () => {
+        // the parser has a depth limit of its own; beyond it a statement is rejected, never passed on unread
+        const nested = (depth: number, innermost: string): string =>
+            `${'SELECT * FROM ('.repeat(depth)}${innermost}${') t'.repeat(depth)}`;
+        assert.doesNotThrow(() => parseReadOnlyQuery(nested(100, 'SELECT 1')));
+        assert.throws(() => parseReadOnlyQuery(nested(5000, 'SELECT 1')), QueryRejectedError);
+        // a write at the deepest level the parser still reads is seen
+        assert.throws(() => parseReadOnlyQuery(nested(100, 'DELETE FROM t RETURNING *')), QueryRejectedError);
+        assert.throws(() => parseReadOnlyQuery(nested(100, 'SELECT pg_sleep(1)')), /pg_sleep/);
+        // and the guard goes on working after input it could not read
+        for (let i = 0; i < 5; i++) {
+            assert.throws(
+                () => parseReadOnlyQuery(`SELECT ${'('.repeat(20_000)}1${')'.repeat(20_000)}`),
+                QueryRejectedError
+            );
+        }
+        assert.doesNotThrow(() => parseReadOnlyQuery('SELECT 1'));
+    });
+
     it('collects functions and relations of view definitions', () => {
         const found = collectReferences('SELECT f(1), s.g(x) FROM a JOIN b.c ON true');
         assert.deepEqual(found.functions, ['f', 's.g']);

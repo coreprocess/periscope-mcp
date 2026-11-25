@@ -55,6 +55,10 @@ The guarantee is the product. It must hold even when the configured credential c
   `pg`, `oracledb`, `mssql`, `libpg-query`) are pinned to exact versions; bump them only together with
   their integration test. `tedious` carries a pnpm patch (`patches/`) that returns decimal and
   money values as exact strings; a `tedious` bump needs the patch regenerated.
+- One `hyparquet` for reader and writer: `hyparquet-writer` asks for an exact `hyparquet` version of its own,
+  and a pnpm override (`package.json`) sets it to the version Periscope reads with. When either is bumped,
+  check that the parts the writer loads (`constants.js`, `schema.js`, `bloom.js`) did not change between the
+  two versions and that a written part has the same bytes as before.
 - Downloads are served by Periscope only, exactly as stored: never hand out storage account
   URLs or SAS tokens, never compress in transit, never serve internal files (`state.json`,
   `cancel.json`).
